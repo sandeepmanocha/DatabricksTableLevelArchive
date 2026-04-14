@@ -1,0 +1,35 @@
+# CareSource Archive — seed config rows (global_settings + schema_templates).
+# Job cluster variant: provisions dedicated compute.
+# For qa/stage/prod, run_as is set via target overrides in databricks.yml (var job_run_as_service_principal).
+# To switch compute: in databricks.yml swap the include between
+#   resources/seed_config_job.yml            (job cluster)
+#   resources/seed_config_job_serverless.yml  (serverless)
+
+resources:
+  jobs:
+    seed_config:
+      name: caresource-archive-seed-config
+      job_clusters:
+        - job_cluster_key: seed_cluster
+          new_cluster:
+            spark_version: ${var.job_spark_version}
+            node_type_id: ${var.job_node_type_id}
+            num_workers: ${var.job_num_workers}
+      tasks:
+        - task_key: seed_config
+          job_cluster_key: seed_cluster
+          depends_on:
+            - task_key: create_tables
+          notebook_task:
+            notebook_path: ../notebooks/seed_config.py
+            base_parameters:
+              config_catalog: "${var.config_catalog}"
+              config_schema: "${var.config_schema}"
+              source_schema: "${var.source_schema}"
+        - task_key: create_tables
+          job_cluster_key: seed_cluster
+          notebook_task:
+            notebook_path: ../notebooks/setup_config_tables.py
+            base_parameters:
+              config_catalog: "${var.config_catalog}"
+              config_schema: "${var.config_schema}"

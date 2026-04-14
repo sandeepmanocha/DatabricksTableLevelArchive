@@ -1,0 +1,30 @@
+# CareSource Archive — schema scanner job (F12, SCN-01–SCN-16).
+# On-demand: discovers tables in Unity Catalog, matches date columns,
+# writes to staging, MERGEs into table_configs.
+
+resources:
+  jobs:
+    caresource_scanner:
+      name: caresource-archive-scanner
+      job_clusters:
+        - job_cluster_key: scanner_cluster
+          new_cluster:
+            spark_version: ${var.job_spark_version}
+            node_type_id: ${var.job_node_type_id}
+            num_workers: ${var.job_num_workers}
+      parameters:
+        - name: config_table
+          default: ""
+        - name: schema_id
+          default: ""
+        - name: force
+          default: "false"
+      tasks:
+        - task_key: run_scanner
+          job_cluster_key: scanner_cluster
+          notebook_task:
+            notebook_path: ../notebooks/run_scanner.py
+            base_parameters:
+              config_table: "{{job.parameters.config_table}}"
+              schema_id: "{{job.parameters.schema_id}}"
+              force: "{{job.parameters.force}}"

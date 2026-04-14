@@ -1,0 +1,62 @@
+# ── Dot-folders (IDE, tool config, local state) ──
+.*/ 
+
+# ── Python ──
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+dist/
+build/
+wheels/
+*.whl
+
+# ── Virtual environments ──
+.venv/
+venv/
+ENV/
+
+# ── Testing ──
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+
+# ── Type checking / linting ──
+.mypy_cache/
+.pytype/
+.ruff_cache/
+
+# ── Packaging / build ──
+*.so
+*.dylib
+*.manifest
+*.spec
+
+# ── Jupyter / Databricks notebooks ──
+.ipynb_checkpoints/
+*.ipynb_output/
+
+# ── Databricks ──
+.databricks/
+
+# ── OS artifacts ──
+.DS_Store
+Thumbs.db
+Desktop.ini
+*~
+
+# ── Secrets / credentials (never commit) ──
+.env
+.env.*
+*.pem
+*.key
+credentials.json
+service-account*.json
+
+# ── Logs ──
+*.log
+logs/

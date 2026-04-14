@@ -1,0 +1,130 @@
+# Declarative Automation Bundle — CareSource Archive
+# Deploy: databricks bundle deploy -t <dev|qa|stage|prod>
+# Run setup job: databricks bundle run setup_config_tables -t <target>
+
+bundle:
+  name: caresource-archive
+
+include:
+  # ── Compute switch ────────────────────────────────────────────────────────
+  # Serverless (faster startup — use for dev/testing):
+  - resources/setup_job_serverless.yml
+  - resources/archive_job_serverless.yml
+  - resources/scanner_job_serverless.yml
+  - resources/generate_test_data_job_serverless.yml
+  - resources/seed_config_job_serverless.yml
+  # Job cluster (production — comment the serverless lines above and uncomment below):
+  # - resources/setup_job.yml
+  # - resources/archive_job.yml
+  # - resources/scanner_job.yml
+  # - resources/seed_config_job.yml
+  # ─────────────────────────────────────────────────────────────────────────
+
+variables:
+  config_catalog:
+    description: Unity Catalog name for archive config tables
+    default: dev_archive_operations
+  config_schema:
+    description: Schema name for config tables
+    default: config
+  job_run_as_service_principal:
+    description: >
+      Unity Catalog service principal display name for job run_as on production targets
+      (setup, archive, rehydrate, scanner). Override per target below or with
+      bundle deploy --var job_run_as_service_principal=<name>.
+    default: ""
+  source_schema:
+    description: UC schema containing source tables to scan/archive
+    default: caresource_data_samples
+  archive_foreach_concurrency:
+    description: Max parallel ForEach iterations for the archive job
+    default: 10
+  job_spark_version:
+    description: Databricks Runtime for job clusters (Jobs API spark_version, e.g. 16.4.x-scala2.12)
+    default: "16.4.x-scala2.12"
+  job_node_type_id:
+    description: Node type for job clusters — cloud/region-specific; override per target if needed
+    default: "i3.xlarge"
+  job_num_workers:
+    description: Worker node count for job clusters (driver is in addition to workers)
+    default: 2
+
+targets:
+  dev:
+    default: true
+    mode: development
+    variables:
+      config_catalog: sandeep_manocha
+      config_schema: caresource_audit
+
+  qa:
+    mode: production
+    variables:
+      config_catalog: qa_archive_operations
+      config_schema: config
+      job_run_as_service_principal: caresource-archive-qa
+    resources:
+      jobs:
+        setup_config_tables:
+          run_as:
+            service_principal_name: ${var.job_run_as_service_principal}
+        caresource_archive_run:
+          run_as:
+            service_principal_name: ${var.job_run_as_service_principal}
+        caresource_rehydrate:
+          run_as:
+            service_principal_name: ${var.job_run_as_service_principal}
+        caresource_scanner:
+          run_as:
+            service_principal_name: ${var.job_run_as_service_principal}
+        seed_config:
+          run_as:
+            service_principal_name: ${var.job_run_as_service_principal}
+
+  stage:
+    mode: production
+    variables:
+      config_catalog: stage_archive_operations
+      config_schema: config
+      job_run_as_service_principal: caresource-archive-stage
+    resources:
+      jobs:
+        setup_config_tables:
+          run_as:
+            service_principal_name: ${var.job_run_as_service_principal}
+        caresource_archive_run:
+          run_as:
+            service_principal_name: ${var.job_run_as_service_principal}
+        caresource_rehydrate:
+          run_as:
+            service_principal_name: ${var.job_run_as_service_principal}
+        caresource_scanner:
+          run_as:
+            service_principal_name: ${var.job_run_as_service_principal}
+        seed_config:
+          run_as:
+            service_principal_name: ${var.job_run_as_service_principal}
+
+  prod:
+    mode: production
+    variables:
+      config_catalog: prod_archive_operations
+      config_schema: config
+      job_run_as_service_principal: caresource-archive-prod
+    resources:
+      jobs:
+        setup_config_tables:
+          run_as:
+            service_principal_name: ${var.job_run_as_service_principal}
+        caresource_archive_run:
+          run_as:
+            service_principal_name: ${var.job_run_as_service_principal}
+        caresource_rehydrate:
+          run_as:
+            service_principal_name: ${var.job_run_as_service_principal}
+        caresource_scanner:
+          run_as:
+            service_principal_name: ${var.job_run_as_service_principal}
+        seed_config:
+          run_as:
+            service_principal_name: ${var.job_run_as_service_principal}
