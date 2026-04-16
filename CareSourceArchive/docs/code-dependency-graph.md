@@ -6,10 +6,10 @@
 |--------|-----------|--------|-------|
 | src/exceptions.py | — | Complete | 14/14 passing |
 | src/utils.py | exceptions.py | Complete | 20/20 passing |
-| src/audit.py | exceptions.py | Complete | 23/23 passing |
+| src/audit.py | exceptions.py | Complete | 48/48 passing |
 | src/config.py | utils.py, exceptions.py | Complete | 19/19 passing |
 | src/conditions.py | exceptions.py | Complete | 17/17 passing |
-| src/rehydrator.py | utils.py, audit.py | Complete | 7/7 passing |
+| src/rehydrator.py | utils.py, audit.py, exceptions.py | Complete | 15/15 passing |
 | src/archiver.py | utils.py, audit.py, config.py, conditions.py | Complete | 22/22 passing |
 | src/scanner.py | config.py, utils.py, exceptions.py | Complete | 23/23 passing |
 
@@ -48,4 +48,4 @@ F13 (exceptions) ✅ ──┬── F1 (utils) ✅ ──┬── F3 (config) 
 ## Legend
 - ✅ Complete
 
-## Total: 145 unit tests passing across 8 test files
+## Total: 295 unit tests collected across 8 test files (294 passing, 1 pre-existing failure in test_scanner.py)

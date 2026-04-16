@@ -4,7 +4,7 @@
 # Parameters (defaults match sandeep_manocha dev layout)
 dbutils.widgets.text("config_catalog", "sandeep_manocha", "Config Catalog")
 dbutils.widgets.text("config_schema", "caresource_audit", "Config Schema")
-dbutils.widgets.text("source_schema", "caresource_data_samples", "Source Schema (UC schema to scan)")
+dbutils.widgets.text("source_schema", "source_data_samples", "Source Schema (UC schema to scan)")
 
 CONFIG_CATALOG = dbutils.widgets.get("config_catalog").strip()
 CONFIG_SCHEMA = dbutils.widgets.get("config_schema").strip()
@@ -39,7 +39,6 @@ if gs_count == 0:
           default_retention_years,
           dry_run_default,
           timezone,
-          secret_scope,
           schema_templates_table,
           table_configs_table,
           archive_base_path_prefix,
@@ -52,7 +51,6 @@ if gs_count == 0:
           0,
           true,
           'America/New_York',
-          'archive-dev',
           '{CONFIG_CATALOG}.{CONFIG_SCHEMA}.schema_templates',
           '{CONFIG_CATALOG}.{CONFIG_SCHEMA}.table_configs',
           '/Volumes/{CONFIG_CATALOG}/caresource_archive/caresource_archive_vol',

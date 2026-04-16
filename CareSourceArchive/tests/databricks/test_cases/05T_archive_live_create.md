@@ -19,7 +19,7 @@
 > 8. **Pre-flight check.** Before running, verify the environment state and report findings. If cleanup is needed, **tell the user what and why** — do not clean up without approval. Check:
 >    - **Source tables:** `claims`, `members`, `providers` have data with expected row counts per year.
 >    - **Audit log:** No `ARCHIVED` entries for these tables (otherwise archiver returns SKIP, not CREATE). If they exist, the audit log AND the corresponding archive folders must both be cleared — never one without the other.
->    - **Archive volume:** No year folders under `.../caresource_data_samples/{claims,members,providers}/`. Folders without matching audit entries = orphan ERROR. Folders with matching audit entries = SKIP.
+>    - **Archive volume:** No year folders under `.../source_data_samples/{claims,members,providers}/`. Folders without matching audit entries = orphan ERROR. Folders with matching audit entries = SKIP.
 >    - **table_configs:** `claims` → `watermark_column = event_date`, `members` → `start_date`, `providers` → `effective_date`. All `is_active = true`. `delete_after_archive = false`.
 
 **Disable These Large Tables for Testing:** `bronze_column_lineage` and `bronze_query_history`
@@ -27,6 +27,12 @@
 **Enable These Tables for Testing:** `claims` (`event_date`), `members` (`start_date`), and `providers` (`effective_date`).
 When enabling, ensure each table's `watermark_column` is set in `table_configs` — the scanner may leave it empty if the column name didn't match its patterns.
 
+---
+
+## Workspace Parameters
+
+> See [`_workspace_params.md`](./_workspace_params.md) for the full placeholder → value mapping per workspace.
+> All commands below use `<PROFILE>`, `<TARGET>`, `<CONFIG_TABLE>`, `<SOURCE_CATALOG>`, `<SOURCE_SCHEMA>`, `<AUDIT_TABLE>`, and `<ARCHIVE_VOL>` placeholders.
 
 ---
 
@@ -34,8 +40,8 @@ When enabling, ensure each table's `watermark_column` is set in `table_configs` 
 
 ```bash
 databricks experimental aitools tools query \
-  "SELECT COUNT(*) AS cnt FROM sandeep_manocha.caresource_audit.archive_audit_log WHERE status = 'ARCHIVED'" \
-  --profile DEFAULT
+  "SELECT COUNT(*) AS cnt FROM <AUDIT_TABLE> WHERE status = 'ARCHIVED'" \
+  --profile <PROFILE>
 ```
 
 Note source row counts per table+year:
@@ -43,13 +49,13 @@ Note source row counts per table+year:
 ```bash
 databricks experimental aitools tools query \
   "SELECT 'claims' AS tbl, YEAR(event_date) AS yr, COUNT(*) AS cnt
-   FROM sandeep_manocha.caresource_data_samples.claims GROUP BY 1,2
+   FROM <SOURCE_CATALOG>.<SOURCE_SCHEMA>.claims GROUP BY 1,2
    UNION ALL
-   SELECT 'members', YEAR(start_date), COUNT(*) FROM sandeep_manocha.caresource_data_samples.members GROUP BY 1,2
+   SELECT 'members', YEAR(start_date), COUNT(*) FROM <SOURCE_CATALOG>.<SOURCE_SCHEMA>.members GROUP BY 1,2
    UNION ALL
-   SELECT 'providers', YEAR(effective_date), COUNT(*) FROM sandeep_manocha.caresource_data_samples.providers GROUP BY 1,2
+   SELECT 'providers', YEAR(effective_date), COUNT(*) FROM <SOURCE_CATALOG>.<SOURCE_SCHEMA>.providers GROUP BY 1,2
    ORDER BY 1,2" \
-  --profile DEFAULT
+  --profile <PROFILE>
 ```
 
 ## Steps
@@ -57,8 +63,8 @@ databricks experimental aitools tools query \
 ### 1. Run archive (live)
 
 ```bash
-databricks bundle run caresource_archive_run -t dev --profile DEFAULT \
-  --params config_table="sandeep_manocha.caresource_audit.global_settings",dry_run="false",source_catalog="sandeep_manocha",source_schema="caresource_data_samples"
+databricks bundle run caresource_archive_run -t <TARGET> --profile <PROFILE> \
+  --params config_table="<CONFIG_TABLE>",dry_run="false",source_catalog="<SOURCE_CATALOG>",source_schema="<SOURCE_SCHEMA>"
 ```
 
 ### 2. Check audit log
@@ -66,10 +72,10 @@ databricks bundle run caresource_archive_run -t dev --profile DEFAULT \
 ```bash
 databricks experimental aitools tools query \
   "SELECT table_name, year, status, record_count, archive_mode, watermark_value
-   FROM sandeep_manocha.caresource_audit.archive_audit_log
+   FROM <AUDIT_TABLE>
    WHERE status IN ('STARTED', 'ARCHIVED')
    ORDER BY created_at DESC LIMIT 30" \
-  --profile DEFAULT
+  --profile <PROFILE>
 ```
 
 **Expect:**
@@ -84,8 +90,8 @@ Check in workspace or via:
 
 ```bash
 databricks experimental aitools tools query \
-  "SELECT COUNT(*) AS cnt FROM delta.\`/Volumes/sandeep_manocha/caresource_archive/caresource_archive_vol/caresource_data_samples/claims/year=2020\`" \
-  --profile DEFAULT
+  "SELECT COUNT(*) AS cnt FROM delta.\`<ARCHIVE_VOL>/claims/year_2020\`" \
+  --profile <PROFILE>
 ```
 
 **Expect:** Count matches the `record_count` from audit log for that table+year.

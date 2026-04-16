@@ -211,7 +211,7 @@ Creates external Delta tables pointing at archive paths and a unified view that 
 | Method | Signature | Purpose |
 |--------|-----------|---------|
 | `_source_base_name` | `(source_table) -> str` | Extract table name from dotted path |
-| `_create_external_table` | `(fq_table, loc_path) -> None` | CREATE TABLE USING DELTA LOCATION, fallback to SHALLOW CLONE |
+| `_create_external_table` | `(source_table, year, fq_table, loc_path) -> None` | CREATE TABLE USING DELTA LOCATION only — no SHALLOW CLONE fallback. Raises `ArchiveOperationError` on failure |
 
 ---
 

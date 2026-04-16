@@ -389,9 +389,9 @@ stateDiagram-v2
 
 | Status | Meaning |
 |--------|---------|
-| `SUCCESS` | All requested years rehydrated |
-| `PARTIAL_SUCCESS` | Some years rehydrated, some failed |
-| `FAILED` | Operation failed (error_message has details) |
+| `COMPLETED` | All requested years restored as external tables |
+| `PARTIAL_COMPLETED` | Some years restored, some skipped (archive folder missing) |
+| `FAILED` | No years restored or hard error (error_message has details) |
 
 ---
 

@@ -43,7 +43,7 @@ Pick an already-archived year (e.g. 2020). Note its `watermark_value`.
 **Manual step** — run this SQL in the workspace:
 
 ```sql
-INSERT INTO sandeep_manocha.caresource_data_samples.claims VALUES
+INSERT INTO sandeep_manocha.source_data_samples.claims VALUES
   ('CLM-NEW-001', 'MBR-00001', 'PRV-0001', 'Medical', 'J06.9', 150.00, 'Closed', DATE'2020-12-30', current_timestamp()),
   ('CLM-NEW-002', 'MBR-00002', 'PRV-0002', 'Dental',  'E11.9', 250.00, 'Active', DATE'2020-12-31', current_timestamp())
 ```
@@ -54,7 +54,7 @@ INSERT INTO sandeep_manocha.caresource_data_samples.claims VALUES
 
 ```bash
 databricks bundle run caresource_archive_run -t dev --profile DEFAULT \
-  --params config_table="sandeep_manocha.caresource_audit.global_settings",dry_run="false",source_catalog="sandeep_manocha",source_schema="caresource_data_samples"
+  --params config_table="sandeep_manocha.caresource_audit.global_settings",dry_run="false",source_catalog="sandeep_manocha",source_schema="source_data_samples"
 ```
 
 ### 3. Check audit log

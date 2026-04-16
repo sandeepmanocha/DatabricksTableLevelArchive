@@ -1,20 +1,15 @@
 # CareSource Archive — deploy config Delta tables (Unity Catalog).
-# Variables config_catalog, config_schema are defined per target in databricks.yml.
-# For qa/stage/prod, run_as is set via target overrides in databricks.yml (var job_run_as_service_principal).
+# Compute-neutral: cluster or serverless is determined per-target in databricks.yml.
 
 resources:
   jobs:
     setup_config_tables:
-      name: "caresource-archive-setup"
-      job_clusters:
-        - job_cluster_key: setup_cluster
-          new_cluster:
-            spark_version: ${var.job_spark_version}
-            node_type_id: ${var.job_node_type_id}
-            num_workers: ${var.job_num_workers}
+      name: caresource-archive-setup
+      permissions:
+        - user_name: ${var.job_manage_user}
+          level: CAN_MANAGE
       tasks:
         - task_key: create_tables
-          job_cluster_key: setup_cluster
           notebook_task:
             notebook_path: ../notebooks/setup_config_tables.py
             base_parameters:

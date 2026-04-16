@@ -22,7 +22,7 @@
 
 - Databricks CLI configured with DEFAULT profile
 - Catalog `sandeep_manocha` exists
-- Schema `sandeep_manocha.caresource_data_samples` exists
+- Schema `sandeep_manocha.source_data_samples` exists
 - External volume path exists at `/Volumes/sandeep_manocha/caresource_archive/caresource_archive_vol`
 
 ## Steps
@@ -64,7 +64,7 @@ Then run the `seed_config` notebook manually or via workspace UI.
 
 ```bash
 databricks bundle run generate_test_data -t dev --profile DEFAULT \
-  --params catalog="sandeep_manocha",schema="caresource_data_samples"
+  --params catalog="sandeep_manocha",schema="source_data_samples"
 ```
 
 **Expect:** 3 tables created:
@@ -79,9 +79,9 @@ databricks bundle run generate_test_data -t dev --profile DEFAULT \
 
 ```bash
 databricks experimental aitools tools query \
-  "SELECT 'claims' AS tbl, COUNT(*) AS cnt FROM sandeep_manocha.caresource_data_samples.claims
-   UNION ALL SELECT 'members', COUNT(*) FROM sandeep_manocha.caresource_data_samples.members
-   UNION ALL SELECT 'providers', COUNT(*) FROM sandeep_manocha.caresource_data_samples.providers" \
+  "SELECT 'claims' AS tbl, COUNT(*) AS cnt FROM sandeep_manocha.source_data_samples.claims
+   UNION ALL SELECT 'members', COUNT(*) FROM sandeep_manocha.source_data_samples.members
+   UNION ALL SELECT 'providers', COUNT(*) FROM sandeep_manocha.source_data_samples.providers" \
   --profile DEFAULT
 ```
 

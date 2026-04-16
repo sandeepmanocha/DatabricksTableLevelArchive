@@ -6,36 +6,38 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.audit import AuditLogger
+from src.audit import (
+    ALLOWED_ARCHIVE_STATUSES,
+    ALLOWED_REHYDRATION_STATUSES,
+    ARCHIVE_AUDIT_COLUMNS,
+    ARCHIVE_SUCCESS_STATUSES,
+    ARCHIVE_TERMINAL_STATUSES,
+    AuditLogger,
+)
 from src.exceptions import ArchiveConfigError
 
-ARCHIVE_STATUSES = (
-    "STARTED",
-    "DRY_RUN",
-    "ARCHIVED",
-    "ARCHIVED_AND_DELETED",
-    "FAILED",
-    "SKIPPED",
-    "SKIPPED_CONCURRENT",
-    "NO_DATA",
-)
+ARCHIVE_STATUSES = tuple(sorted(ALLOWED_ARCHIVE_STATUSES))
+REHYDRATION_STATUSES = tuple(sorted(ALLOWED_REHYDRATION_STATUSES))
 
 
 @dataclass
 class _TestRunContext:
     settings: dict
-    secrets: dict
     job_context: dict
     archive_run_id: str
 
 
 def _make_ctx(**kwargs):
-    settings = {"audit_catalog": "test_catalog", "audit_schema": "audit"}
+    settings = {
+        "audit_catalog": "test_catalog",
+        "audit_schema": "audit",
+        "warehouse_id": "super-secret-wh",
+        "client_secret": "top-secret",
+    }
     if "settings" in kwargs and isinstance(kwargs["settings"], dict):
         settings = {**settings, **kwargs["settings"]}
     base = {
         "settings": settings,
-        "secrets": {"warehouse_id": "super-secret-wh", "client_secret": "top-secret"},
         "job_context": {
             "workspace_id": "ws-99",
             "job_id": "job-1",
@@ -140,7 +142,7 @@ def test_log_archive_generates_insert_for_each_status(audit_logger, status):
 
 def test_log_archive_invalid_status_raises(audit_logger):
     _ctx, log, _mock_spark = audit_logger
-    with pytest.raises(ArchiveConfigError):
+    with pytest.raises(ArchiveConfigError, match=re.escape("Invalid archive audit status: 'NOT_A_STATUS'")):
         log.log_archive(
             table="t",
             year=1,
@@ -170,7 +172,8 @@ def test_log_archive_sql_never_contains_secrets(audit_logger):
     assert "top-secret" not in sql
 
 
-def test_log_rehydrate_generates_insert(audit_logger):
+@pytest.mark.parametrize("status", REHYDRATION_STATUSES)
+def test_log_rehydrate_generates_insert(audit_logger, status):
     _ctx, log, mock_spark = audit_logger
     log.log_rehydrate(
         archive_path="abfss://x/y",
@@ -179,7 +182,7 @@ def test_log_rehydrate_generates_insert(audit_logger):
         target_schema="ts",
         years="2020,2021",
         tables_created=2,
-        status="COMPLETED",
+        status=status,
         error_message=None,
     )
     mock_spark.sql.assert_called_once()
@@ -191,9 +194,24 @@ def test_log_rehydrate_generates_insert(audit_logger):
     assert "tc" in sql
     assert "ts" in sql
     assert "2020,2021" in sql
-    assert "COMPLETED" in sql
+    assert status in sql
     assert re.search(r"current_user\s*\(\s*\)", sql, re.IGNORECASE)
     assert "current_timestamp()" in sql.lower()
+
+
+def test_log_rehydrate_rejects_invalid_status(audit_logger):
+    _ctx, log, _mock_spark = audit_logger
+    with pytest.raises(ArchiveConfigError, match=re.escape("Invalid rehydration audit status: 'SUCCESS'")):
+        log.log_rehydrate(
+            archive_path="abfss://x/y",
+            source="src.table",
+            target_catalog="tc",
+            target_schema="ts",
+            years="2020,2021",
+            tables_created=2,
+            status="SUCCESS",
+            error_message=None,
+        )
 
 
 def test_log_rehydrate_sql_never_contains_secrets(audit_logger):
@@ -290,8 +308,8 @@ def test_check_concurrent_excludes_completed_foreign_runs(audit_logger):
     assert got == (False, False, None, None)
     sql = mock_spark.sql.call_args[0][0]
     assert "NOT EXISTS" in sql
-    assert "ARCHIVED" in sql
-    assert "FAILED" in sql
+    for status in ARCHIVE_TERMINAL_STATUSES:
+        assert status in sql
 
 
 def test_check_concurrent_false_when_empty(audit_logger):
@@ -324,8 +342,6 @@ def test_aud06_aud07_context_values_bound_in_insert(audit_logger):
 
 
 def test_aud_archive_audit_columns_include_new_fields():
-    from src.audit import ARCHIVE_AUDIT_COLUMNS
-
     assert "watermark_value" in ARCHIVE_AUDIT_COLUMNS
     assert "source_year_count" in ARCHIVE_AUDIT_COLUMNS
     assert "archive_mode" in ARCHIVE_AUDIT_COLUMNS
@@ -409,6 +425,24 @@ def test_aud_get_last_run_state_no_prior_run(audit_logger):
     assert log.get_last_run_state("my.table", 2022) == (None, None, None)
 
 
+def test_aud_get_last_run_state_handles_null_source_year_count(audit_logger):
+    _ctx, log, mock_spark = audit_logger
+    out_df = MagicMock()
+    out_df.collect.return_value = [
+        {
+            "status": "ARCHIVED_AND_DELETED",
+            "watermark_value": date(2022, 6, 15),
+            "source_year_count": None,
+        }
+    ]
+    mock_spark.sql.return_value = out_df
+    assert log.get_last_run_state("my.table", 2022) == (
+        "ARCHIVED_AND_DELETED",
+        date(2022, 6, 15),
+        None,
+    )
+
+
 def test_get_latest_status_returns_most_recent(audit_logger):
     _ctx, log, mock_spark = audit_logger
     out_df = MagicMock()
@@ -486,3 +520,53 @@ def test_check_concurrent_custom_threshold(audit_logger):
         )
     assert fresh[:2] == (True, False)
     assert stale[:2] == (False, True)
+
+
+def test_check_concurrent_non_datetime_created_at_treated_as_stale(audit_logger):
+    _ctx, log, mock_spark = audit_logger
+    out_df = MagicMock()
+    out_df.collect.return_value = [
+        {"archive_run_id": "foreign-run", "created_at": "not-a-datetime"}
+    ]
+    mock_spark.sql.return_value = out_df
+    result = log.check_concurrent("a.b.c", 2020, "run-a", stale_threshold_hours=4)
+    assert result[0] is False
+    assert result[1] is True
+    assert result[2] == "foreign-run"
+    assert result[3] == pytest.approx(4.0)
+
+
+def test_check_concurrent_boundary_at_exact_threshold(audit_logger):
+    fixed = datetime(2026, 4, 7, 12, 0, 0, tzinfo=timezone.utc)
+    _ctx, log, mock_spark = audit_logger
+    out_df = MagicMock()
+    out_df.collect.return_value = [
+        {"archive_run_id": "edge-run", "created_at": fixed - timedelta(hours=4)}
+    ]
+    mock_spark.sql.return_value = out_df
+    with patch("src.audit._utc_now", return_value=fixed):
+        result = log.check_concurrent("a.b.c", 2020, "run-a", stale_threshold_hours=4)
+    assert result[0] is False
+    assert result[1] is True
+    assert result[2] == "edge-run"
+    assert result[3] == pytest.approx(4.0)
+
+
+def test_terminal_statuses_invariant():
+    assert ARCHIVE_TERMINAL_STATUSES == ALLOWED_ARCHIVE_STATUSES - {"STARTED"}
+
+
+def test_success_statuses_subset_of_terminal():
+    assert ARCHIVE_SUCCESS_STATUSES < ARCHIVE_TERMINAL_STATUSES
+
+
+def test_get_last_run_state_uses_success_statuses(audit_logger):
+    _ctx, log, mock_spark = audit_logger
+    out_df = MagicMock()
+    out_df.collect.return_value = []
+    mock_spark.sql.return_value = out_df
+    log.get_last_run_state("my.table", 2022)
+    sql = mock_spark.sql.call_args[0][0]
+    for status in ARCHIVE_SUCCESS_STATUSES:
+        assert status in sql
+    assert "FAILED" not in sql.split("IN")[1]

@@ -35,7 +35,7 @@ Reset the archive state so this run does a fresh CREATE → DELETE in one pass.
 
 ```bash
 databricks fs rm -r \
-  dbfs:/Volumes/sandeep_manocha/caresource_archive/caresource_archive_vol/caresource_data_samples/providers \
+  dbfs:/Volumes/sandeep_manocha/caresource_archive/caresource_archive_vol/source_data_samples/providers \
   --profile DEFAULT
 ```
 
@@ -54,7 +54,7 @@ SET delete_after_archive = true,
     modified_by = 'manual',
     modified_at = current_timestamp(),
     change_reason = 'Test: enable delete after archive for providers'
-WHERE table_id = 'sandeep_manocha.caresource_data_samples.providers'
+WHERE table_id = 'sandeep_manocha.source_data_samples.providers'
 ```
 
 ### 4. Note source count (baseline)
@@ -62,7 +62,7 @@ WHERE table_id = 'sandeep_manocha.caresource_data_samples.providers'
 ```bash
 databricks experimental aitools tools query \
   "SELECT YEAR(effective_date) AS yr, COUNT(*) AS cnt
-   FROM sandeep_manocha.caresource_data_samples.providers
+   FROM sandeep_manocha.source_data_samples.providers
    GROUP BY 1 ORDER BY 1" \
   --profile DEFAULT
 ```
@@ -75,7 +75,7 @@ databricks experimental aitools tools query \
 
 ```bash
 databricks bundle run caresource_archive_run -t dev --profile DEFAULT \
-  --params config_table="sandeep_manocha.caresource_audit.global_settings",dry_run="false",table_config_filter="source_table = 'providers'",source_catalog="sandeep_manocha",source_schema="caresource_data_samples"
+  --params config_table="sandeep_manocha.caresource_audit.global_settings",dry_run="false",table_config_filter="source_table = 'providers'",source_catalog="sandeep_manocha",source_schema="source_data_samples"
 ```
 
 ### 2. Check audit log
@@ -96,7 +96,7 @@ databricks experimental aitools tools query \
 ```bash
 databricks experimental aitools tools query \
   "SELECT YEAR(effective_date) AS yr, COUNT(*) AS cnt
-   FROM sandeep_manocha.caresource_data_samples.providers
+   FROM sandeep_manocha.source_data_samples.providers
    GROUP BY 1 ORDER BY 1" \
   --profile DEFAULT
 ```
@@ -107,7 +107,7 @@ databricks experimental aitools tools query \
 
 ```bash
 databricks experimental aitools tools query \
-  "SELECT COUNT(*) AS cnt FROM delta.\`/Volumes/sandeep_manocha/caresource_archive/caresource_archive_vol/caresource_data_samples/providers/year_2020\`" \
+  "SELECT COUNT(*) AS cnt FROM delta.\`/Volumes/sandeep_manocha/caresource_archive/caresource_archive_vol/source_data_samples/providers/year_2020\`" \
   --profile DEFAULT
 ```
 
@@ -121,7 +121,7 @@ SET delete_after_archive = false,
     modified_by = 'manual',
     modified_at = current_timestamp(),
     change_reason = 'Reset delete_after_archive after test'
-WHERE table_id = 'sandeep_manocha.caresource_data_samples.providers'
+WHERE table_id = 'sandeep_manocha.source_data_samples.providers'
 ```
 
 To restore data, re-run `generate_test_data` or use test 12 (rehydration).

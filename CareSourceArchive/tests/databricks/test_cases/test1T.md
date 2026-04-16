@@ -3,7 +3,7 @@ Use Databricks Plugins & CLI
 
 Possible Prompts:
 Source Catalog:sandeep_manocha
-Source Schema:caresource_data_samples
+Source Schema:source_data_samples
 Audit Schema:caresource_audit
 config_table: sandeep_manocha.caresource_audit.global_settings 
 
@@ -55,12 +55,12 @@ databricks bundle run caresource_scanner -t dev --profile DEFAULT \
 
 ```bash
 databricks bundle run caresource_archive_run -t dev --profile DEFAULT \
-  --params config_table="sandeep_manocha.caresource_audit.global_settings",dry_run="true",source_catalog="sandeep_manocha",source_schema="caresource_data_samples"
+  --params config_table="sandeep_manocha.caresource_audit.global_settings",dry_run="true",source_catalog="sandeep_manocha",source_schema="source_data_samples"
 ```
 
 ## Run the Archive without Dry Run Mode
 
 ```bash
 databricks bundle run caresource_archive_run -t dev --profile DEFAULT \
-  --params config_table="sandeep_manocha.caresource_audit.global_settings",dry_run="false",source_catalog="sandeep_manocha",source_schema="caresource_data_samples"
+  --params config_table="sandeep_manocha.caresource_audit.global_settings",dry_run="false",source_catalog="sandeep_manocha",source_schema="source_data_samples"
 ```

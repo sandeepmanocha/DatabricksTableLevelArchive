@@ -267,3 +267,26 @@ class TestDiagnosticMessage:
             "ownership", "missing_folder_after_delete", "orphan_folder",
             "count_mismatch", "operation_failure",
         }
+
+
+class TestIsNotFound:
+    """ArchiveError.is_not_found classifies dbutils.fs exceptions by message text."""
+
+    @pytest.mark.parametrize("msg", [
+        "java.io.FileNotFoundException: /Volumes/cat/sch/vol/path",
+        "FileNotFoundException: some path",
+        "No such file or directory /Volumes/cat/sch/vol",
+        "PATH_NOT_FOUND: /some/path",
+        "/Volumes/cat/sch/vol does not exist",
+    ])
+    def test_returns_true_for_not_found(self, msg):
+        assert ArchiveError.is_not_found(Exception(msg)) is True
+
+    @pytest.mark.parametrize("msg", [
+        "PERMISSION_DENIED: User does not have READ VOLUME",
+        "INTERNAL: connection refused",
+        "some random error",
+        "",
+    ])
+    def test_returns_false_for_other_errors(self, msg):
+        assert ArchiveError.is_not_found(Exception(msg)) is False

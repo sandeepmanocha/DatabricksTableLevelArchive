@@ -1,16 +1,13 @@
 # CareSource Archive — ForEach job: generate_parameters → run_archive per table_config.
-# ForEach concurrency is controlled by var.archive_foreach_concurrency (set at deploy time).
+# Compute-neutral: cluster or serverless is determined per-target in databricks.yml.
 
 resources:
   jobs:
     caresource_archive_run:
       name: caresource-archive-run
-      job_clusters:
-        - job_cluster_key: archive_cluster
-          new_cluster:
-            spark_version: ${var.job_spark_version}
-            node_type_id: ${var.job_node_type_id}
-            num_workers: ${var.job_num_workers}
+      permissions:
+        - user_name: ${var.job_manage_user}
+          level: CAN_MANAGE
       parameters:
         - name: config_table
           default: ""
@@ -24,7 +21,6 @@ resources:
           default: ""
       tasks:
         - task_key: generate_parameters
-          job_cluster_key: archive_cluster
           notebook_task:
             notebook_path: ../notebooks/generate_parameters.py
             base_parameters:
@@ -41,21 +37,16 @@ resources:
             inputs: "{{tasks.generate_parameters.values.archive_task_inputs}}"
             task:
               task_key: run_archive_iteration
-              job_cluster_key: archive_cluster
               notebook_task:
                 notebook_path: ../notebooks/run_archive.py
                 base_parameters:
                   foreach_payload: "{{input}}"
 
-    # F9.2, JOB-03 — on-demand rehydration; all parameters at runtime (RHY-01).
     caresource_rehydrate:
       name: caresource-archive-rehydrate
-      job_clusters:
-        - job_cluster_key: rehydrate_cluster
-          new_cluster:
-            spark_version: ${var.job_spark_version}
-            node_type_id: ${var.job_node_type_id}
-            num_workers: ${var.job_num_workers}
+      permissions:
+        - user_name: ${var.job_manage_user}
+          level: CAN_MANAGE
       parameters:
         - name: config_table
           default: ""
@@ -71,7 +62,6 @@ resources:
           default: ""
       tasks:
         - task_key: run_rehydrate
-          job_cluster_key: rehydrate_cluster
           notebook_task:
             notebook_path: ../notebooks/run_rehydrate.py
             base_parameters:

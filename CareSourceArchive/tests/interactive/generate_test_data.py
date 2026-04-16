@@ -45,8 +45,8 @@ Faker.seed(SEED)
 random.seed(SEED)
 
 # COMMAND ----------
-dbutils.widgets.text("catalog", "sandeep_manocha", "Catalog")
-dbutils.widgets.text("schema", "caresource_data_samples", "Schema")
+dbutils.widgets.text("catalog", "dev2_archive", "Catalog")
+dbutils.widgets.text("schema", "source_data_samples", "Schema")
 
 CATALOG = dbutils.widgets.get("catalog").strip()
 SCHEMA = dbutils.widgets.get("schema").strip()
@@ -57,7 +57,7 @@ if not CATALOG or not SCHEMA:
 print(f"Target: {CATALOG}.{SCHEMA}")
 
 # COMMAND ----------
-# Verify catalog and schema exist — we do NOT create them
+# Verify catalog exists; create schema if needed
 _cat_rows = spark.sql(
     f"SELECT 1 FROM system.information_schema.catalogs "
     f"WHERE catalog_name = '{CATALOG}'"
@@ -67,15 +67,7 @@ if not _cat_rows:
         f"Catalog '{CATALOG}' does not exist. Create it before running this notebook."
     )
 
-_sch_rows = spark.sql(
-    f"SELECT 1 FROM system.information_schema.schemata "
-    f"WHERE catalog_name = '{CATALOG}' AND schema_name = '{SCHEMA}'"
-).collect()
-if not _sch_rows:
-    raise ValueError(
-        f"Schema '{CATALOG}.{SCHEMA}' does not exist. Create it before running this notebook."
-    )
-
+spark.sql(f"CREATE SCHEMA IF NOT EXISTS `{CATALOG}`.`{SCHEMA}`")
 print(f"✓ {CATALOG}.{SCHEMA} exists")
 
 # COMMAND ----------

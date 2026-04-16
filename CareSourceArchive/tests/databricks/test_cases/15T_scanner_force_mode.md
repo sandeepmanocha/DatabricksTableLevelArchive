@@ -33,7 +33,7 @@ SET retention_years = 3,
     modified_by = 'manual',
     modified_at = current_timestamp(),
     change_reason = 'Manual override: set retention to 3 years'
-WHERE table_id = 'sandeep_manocha.caresource_data_samples.claims'
+WHERE table_id = 'sandeep_manocha.source_data_samples.claims'
 ```
 
 Note: `modified_by = 'manual'` means scanner normally won't overwrite this row.

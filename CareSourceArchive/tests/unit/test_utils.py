@@ -21,7 +21,6 @@ from src.utils import (
     ensure_table_exists,
     ensure_table_with_setup_message,
     generate_archive_run_id,
-    load_secrets,
     row_to_dict,
     row_value,
     source_fq_from_config,
@@ -39,17 +38,15 @@ from src.utils import (
 class TestRunContext:
     def test_dataclass_field_names_and_order(self):
         names = [f.name for f in fields(RunContext)]
-        assert names == ["settings", "secrets", "job_context", "archive_run_id"]
+        assert names == ["settings", "job_context", "archive_run_id"]
 
     def test_instantiation_data_container(self):
         rc = RunContext(
             settings={"a": 1},
-            secrets={"k": "v"},
             job_context={"x": None},
             archive_run_id="rid",
         )
         assert rc.settings == {"a": 1}
-        assert rc.secrets == {"k": "v"}
         assert rc.job_context == {"x": None}
         assert rc.archive_run_id == "rid"
 
@@ -87,10 +84,20 @@ class TestArchiveFolderExists:
         assert archive_folder_exists(dbutils, "/b", "tbl", 2020) is True
         dbutils.fs.ls.assert_called_once_with("/b/tbl/year_2020")
 
-    def test_false_when_ls_raises(self):
+    def test_false_when_path_not_found(self):
         dbutils = MagicMock()
-        dbutils.fs.ls.side_effect = Exception("not found")
+        dbutils.fs.ls.side_effect = Exception(
+            "java.io.FileNotFoundException: /b/tbl/year_2021"
+        )
         assert archive_folder_exists(dbutils, "/b", "tbl", 2021) is False
+
+    def test_raises_on_non_not_found_error(self):
+        dbutils = MagicMock()
+        dbutils.fs.ls.side_effect = Exception(
+            "PERMISSION_DENIED: User does not have READ VOLUME"
+        )
+        with pytest.raises(Exception, match="PERMISSION_DENIED"):
+            archive_folder_exists(dbutils, "/b", "tbl", 2021)
 
 
 class _FakeRow:
@@ -185,63 +192,6 @@ class TestConfigureLogging:
         assert "hello" in err
         assert "[run-xyz-001] []" in err
 
-
-class TestLoadSecrets:
-    def test_raises_when_secret_scope_missing(self):
-        dbutils = MagicMock()
-        with pytest.raises(ArchiveConfigError):
-            load_secrets({}, dbutils)
-
-    def test_missing_keys_return_none(self):
-        dbutils = MagicMock()
-
-        def get_secret(scope, key):
-            if key == "warehouse_id":
-                return "wh-1"
-            raise Exception("not found")
-
-        dbutils.secrets.get.side_effect = get_secret
-        out = load_secrets({"secret_scope": "sc1"}, dbutils)
-        assert out["warehouse_id"] == "wh-1"
-        assert out["client_id"] is None
-        assert out["client_secret"] is None
-
-    def test_reads_known_keys_from_scope(self):
-        dbutils = MagicMock()
-        dbutils.secrets.get.side_effect = lambda s, k: {
-            ("my-scope", "warehouse_id"): "w",
-            ("my-scope", "client_id"): "cid",
-            ("my-scope", "client_secret"): "csec",
-        }[(s, k)]
-        out = load_secrets({"secret_scope": "my-scope"}, dbutils)
-        assert out == {
-            "warehouse_id": "w",
-            "client_id": "cid",
-            "client_secret": "csec",
-        }
-        assert dbutils.secrets.get.call_count == 3
-
-    def test_exception_message_does_not_contain_secret_values(self):
-        dbutils = MagicMock()
-        super_secret = "SUPER_SECRET_VALUE_NEVER_LEAK"
-        with pytest.raises(ArchiveConfigError) as ei:
-            load_secrets({"other": "x", "client_secret": super_secret}, dbutils)
-        assert super_secret not in str(ei.value)
-
-    def test_logs_do_not_contain_secret_values(self, restore_root_logging, caplog):
-        caplog.set_level(logging.DEBUG)
-        root = logging.getLogger()
-        root.handlers.clear()
-        configure_logging("log-test-run")
-        dbutils = MagicMock()
-        secret_val = "NEVER_LOG_THIS_CLIENT_SECRET"
-        dbutils.secrets.get.side_effect = lambda s, k: {
-            ("sc", "warehouse_id"): "wh",
-            ("sc", "client_id"): "id",
-            ("sc", "client_secret"): secret_val,
-        }[(s, k)]
-        load_secrets({"secret_scope": "sc"}, dbutils)
-        assert secret_val not in caplog.text
 
 
 class TestConfigureLoggingTableField:

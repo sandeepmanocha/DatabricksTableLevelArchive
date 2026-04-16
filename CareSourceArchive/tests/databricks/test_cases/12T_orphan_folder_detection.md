@@ -33,14 +33,14 @@ Reset claims year 2018 to a state where the audit log has no successful archive 
 **Manual step** — run in workspace notebook:
 
 ```python
-dbutils.fs.rm("/Volumes/sandeep_manocha/caresource_archive/caresource_archive_vol/caresource_data_samples/claims/year_2018", recurse=True)
+dbutils.fs.rm("/Volumes/sandeep_manocha/caresource_archive/caresource_archive_vol/source_data_samples/claims/year_2018", recurse=True)
 ```
 
 ### 1b. Delete audit entries for claims year 2018
 
 ```sql
 DELETE FROM sandeep_manocha.caresource_audit.archive_audit_log
-WHERE table_name = 'sandeep_manocha.caresource_data_samples.claims'
+WHERE table_name = 'sandeep_manocha.source_data_samples.claims'
   AND year = 2018
 ```
 
@@ -49,7 +49,7 @@ WHERE table_name = 'sandeep_manocha.caresource_data_samples.claims'
 ```sql
 SELECT
   (SELECT COUNT(*) FROM sandeep_manocha.caresource_audit.archive_audit_log
-   WHERE table_name = 'sandeep_manocha.caresource_data_samples.claims' AND year = 2018) AS audit_entries
+   WHERE table_name = 'sandeep_manocha.source_data_samples.claims' AND year = 2018) AS audit_entries
 ```
 
 **Expect:** `audit_entries = 0`
@@ -63,7 +63,7 @@ SELECT
 **Manual step** — run in workspace notebook:
 
 ```python
-dbutils.fs.mkdirs("/Volumes/sandeep_manocha/caresource_archive/caresource_archive_vol/caresource_data_samples/claims/year_2018")
+dbutils.fs.mkdirs("/Volumes/sandeep_manocha/caresource_archive/caresource_archive_vol/source_data_samples/claims/year_2018")
 ```
 
 This creates the folder without any data or audit trail — the exact condition `folder_exists AND last_status IS NULL` that triggers orphan detection.
@@ -72,7 +72,7 @@ This creates the folder without any data or audit trail — the exact condition 
 
 ```bash
 databricks bundle run caresource_archive_run -t dev --profile DEFAULT \
-  --params config_table="sandeep_manocha.caresource_audit.global_settings",dry_run="false",source_catalog="sandeep_manocha",source_schema="caresource_data_samples",table_config_filter="source_table = 'claims'"
+  --params config_table="sandeep_manocha.caresource_audit.global_settings",dry_run="false",source_catalog="sandeep_manocha",source_schema="source_data_samples",table_config_filter="source_table = 'claims'"
 ```
 
 ### 2c. Check audit log
@@ -102,7 +102,7 @@ ORDER BY created_at DESC LIMIT 10
 **Manual step** — run in workspace notebook:
 
 ```python
-dbutils.fs.rm("/Volumes/sandeep_manocha/caresource_archive/caresource_archive_vol/caresource_data_samples/claims/year_2018", recurse=True)
+dbutils.fs.rm("/Volumes/sandeep_manocha/caresource_archive/caresource_archive_vol/source_data_samples/claims/year_2018", recurse=True)
 ```
 
 ### 3b. Re-run archive

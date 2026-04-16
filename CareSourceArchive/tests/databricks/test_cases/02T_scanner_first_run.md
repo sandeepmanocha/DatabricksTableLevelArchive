@@ -80,7 +80,7 @@ databricks experimental aitools tools query \
 ```sql
 UPDATE sandeep_manocha.caresource_audit.schema_templates
 SET watermark_column_patterns = ARRAY('event_date', 'start_time', 'query_date', 'start_date', 'effective_date')
-WHERE schema_id = 'sandeep_manocha__caresource_data_samples'
+WHERE schema_id = 'sandeep_manocha__source_data_samples'
 ```
 
 Then re-run the scanner.

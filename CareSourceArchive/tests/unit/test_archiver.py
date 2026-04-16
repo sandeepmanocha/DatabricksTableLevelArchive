@@ -14,7 +14,6 @@ def _global_settings():
         "audit_schema": "gaudit",
         "default_retention_years": 7,
         "archive_base_path_prefix": "abfss://x/",
-        "secret_scope": "s",
         "schema_templates_table": "gcat.cfg.tmpl",
         "table_configs_table": "gcat.cfg.tbl",
         "timezone": "America/New_York",
@@ -54,7 +53,6 @@ def _make_engine(ctx=None, audit=None, spark=None):
     if ctx is None:
         ctx = RunContext(
             settings=_global_settings(),
-            secrets={},
             job_context={"workspace_id": "ws1"},
             archive_run_id="run-a",
         )
@@ -68,7 +66,7 @@ def _make_engine(ctx=None, audit=None, spark=None):
 def test_arc01_init_stores_ctx_audit_spark():
     from src.archiver import ArchiveEngine
 
-    ctx = RunContext(settings=_global_settings(), secrets={}, job_context={}, archive_run_id="r")
+    ctx = RunContext(settings=_global_settings(), job_context={}, archive_run_id="r")
     audit = MagicMock()
     spark = MagicMock()
     eng = ArchiveEngine(ctx, audit, spark)
@@ -1614,7 +1612,7 @@ def test_uc6_fresh_concurrent_skips():
 def test_uc6_stale_threshold_passed_from_settings():
     settings = _global_settings()
     settings["stale_started_threshold_hours"] = 8
-    ctx = RunContext(settings=settings, secrets={}, job_context={"workspace_id": "ws1"}, archive_run_id="run-a")
+    ctx = RunContext(settings=settings, job_context={"workspace_id": "ws1"}, archive_run_id="run-a")
     eng, _, audit, spark = _make_engine(ctx=ctx)
     audit.get_last_run_state.return_value = (None, None, None)
     audit.check_concurrent.return_value = (False, False, None, None)
@@ -1830,6 +1828,43 @@ def test_dry07_append_predicted_for_new_data():
     assert yr_data["would_archive"] == 7
     dry_calls = [c for c in audit.log_dry_run.call_args_list if c.kwargs]
     assert dry_calls[0].kwargs.get("action") == "APPEND"
+
+
+def test_dry09_permission_denied_logs_failed_before_raising():
+    eng, _, audit, spark = _make_engine()
+    audit.get_last_run_state.return_value = (None, None, None)
+
+    def sql_side_effect(q):
+        m = MagicMock()
+        qs = q.replace("\n", " ")
+        if "YEAR(current_date())" in qs:
+            fr = MagicMock()
+            fr.__getitem__ = lambda self, k: 2026 if k == "y" else None
+            fr.__contains__ = lambda self, k: k == "y"
+            m.first.return_value = fr
+            return m
+        if "DISTINCT YEAR" in q:
+            m.collect.return_value = [MagicMock(yr=2018)]
+            return m
+        m.first.return_value = {"count": 50}
+        return m
+
+    spark.sql.side_effect = sql_side_effect
+    spark.conf = MagicMock()
+    dbutils = MagicMock()
+    perm_error = Exception("PERMISSION_DENIED: User does not have READ VOLUME on '/Volumes/dev2_archive/...'")
+    with patch("src.archiver.archive_folder_exists", side_effect=perm_error):
+        with pytest.raises(Exception, match="PERMISSION_DENIED"):
+            eng.run(_table_config(), dry_run=True, dbutils=dbutils)
+    failed_calls = [
+        c.kwargs for c in audit.log_archive.call_args_list
+        if c.kwargs.get("status") == "FAILED"
+    ]
+    assert len(failed_calls) == 1
+    assert failed_calls[0]["table"] == "healthcare.claims.member"
+    assert failed_calls[0]["year"] == 2018
+    assert "PERMISSION_DENIED" in failed_calls[0]["error_message"]
+    audit.log_dry_run.assert_not_called()
 
 
 def test_dry08_error_predicted_for_orphan_folder():

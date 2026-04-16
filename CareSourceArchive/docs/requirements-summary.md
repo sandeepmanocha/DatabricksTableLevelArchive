@@ -63,7 +63,7 @@ What users should be able to do without writing code or making system changes:
 - **Concurrency guards**: Before archiving a table+year, write a `STARTED` status to the audit table. If another job is already processing the same table+year, skip with `SKIPPED_CONCURRENT`. Verify the archive was written by this run before deleting from source
 - **Audit logging**: Every archive, restore, and dry-run logged with:
   - Timestamp, record counts, conditions applied, who ran it, outcome
-  - Enumerated status values: `STARTED`, `DRY_RUN`, `ARCHIVED`, `ARCHIVED_AND_DELETED`, `FAILED`, `SKIPPED`, `SKIPPED_CONCURRENT`, `NO_DATA` (archive) and `SUCCESS`, `PARTIAL_SUCCESS`, `FAILED` (rehydration)
+  - Enumerated status values: `STARTED`, `DRY_RUN`, `ARCHIVED`, `ARCHIVED_AND_DELETED`, `FAILED`, `SKIPPED`, `SKIPPED_CONCURRENT`, `NO_DATA` (archive) and `COMPLETED`, `PARTIAL_COMPLETED`, `FAILED` (rehydration)
   - `archive_run_id` (UUID) as the **durable correlation key** across audit rows, year folders, and `_archive_metadata.json` — survives after Lakeflow job history ages out of system tables
   - Databricks job context (workspace_id, job_id, job_run_id, task_run_id) for joining with `system.lakeflow.job_run_timeline` while retained; `archive_run_id` is the permanent key
 - **Application logging**: Python `logging` module with structured format `[run_id][table]` at DEBUG/INFO/WARNING/ERROR levels. Visible in Databricks job run output and driver logs

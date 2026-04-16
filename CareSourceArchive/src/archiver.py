@@ -658,13 +658,20 @@ class ArchiveEngine:
             report: dict[str, Any] = {"tables": {}}
             report["tables"][tid] = {"years": {}}
             for y in years:
-                folder = (
-                    archive_folder_exists(
-                        dbutils, merged["archive_base_path"], merged["source_table"], y
+                try:
+                    folder = (
+                        archive_folder_exists(
+                            dbutils, merged["archive_base_path"], merged["source_table"], y
+                        )
+                        if dbutils is not None
+                        else False
                     )
-                    if dbutils is not None
-                    else False
-                )
+                except Exception as exc:
+                    self._audit.log_archive(
+                        table=tid, year=y, status="FAILED",
+                        record_count=0, error_message=str(exc),
+                    )
+                    raise
                 stats = self._dry_run_year(
                     merged, y, conditions, exclusion_clause, folder_exists=folder,
                 )

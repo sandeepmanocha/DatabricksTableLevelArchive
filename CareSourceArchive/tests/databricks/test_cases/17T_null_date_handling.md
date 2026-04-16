@@ -29,9 +29,9 @@ Verify NULL dates exist:
 
 ```bash
 databricks experimental aitools tools query \
-  "SELECT 'claims' AS tbl, COUNT(*) AS nulls FROM sandeep_manocha.caresource_data_samples.claims WHERE event_date IS NULL
-   UNION ALL SELECT 'members', COUNT(*) FROM sandeep_manocha.caresource_data_samples.members WHERE start_date IS NULL
-   UNION ALL SELECT 'providers', COUNT(*) FROM sandeep_manocha.caresource_data_samples.providers WHERE effective_date IS NULL" \
+  "SELECT 'claims' AS tbl, COUNT(*) AS nulls FROM sandeep_manocha.source_data_samples.claims WHERE event_date IS NULL
+   UNION ALL SELECT 'members', COUNT(*) FROM sandeep_manocha.source_data_samples.members WHERE start_date IS NULL
+   UNION ALL SELECT 'providers', COUNT(*) FROM sandeep_manocha.source_data_samples.providers WHERE effective_date IS NULL" \
   --profile DEFAULT
 ```
 
@@ -43,7 +43,7 @@ databricks experimental aitools tools query \
 
 ```bash
 databricks bundle run caresource_archive_run -t dev --profile DEFAULT \
-  --params config_table="sandeep_manocha.caresource_audit.global_settings",dry_run="true",source_catalog="sandeep_manocha",source_schema="caresource_data_samples"
+  --params config_table="sandeep_manocha.caresource_audit.global_settings",dry_run="true",source_catalog="sandeep_manocha",source_schema="source_data_samples"
 ```
 
 ### 2. Check null_date_count in audit

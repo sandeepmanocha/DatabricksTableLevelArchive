@@ -35,6 +35,17 @@ ALLOWED_ARCHIVE_STATUSES = frozenset(
         "NO_DATA",
     }
 )
+ARCHIVE_TERMINAL_STATUSES = frozenset(ALLOWED_ARCHIVE_STATUSES - {"STARTED"})
+
+ARCHIVE_SUCCESS_STATUSES = frozenset({"ARCHIVED", "ARCHIVED_AND_DELETED"})
+
+ALLOWED_REHYDRATION_STATUSES = frozenset(
+    {
+        "COMPLETED",
+        "PARTIAL_COMPLETED",
+        "FAILED",
+    }
+)
 
 ARCHIVE_AUDIT_COLUMNS = [
     "audit_id",
@@ -79,6 +90,10 @@ REHYDRATION_AUDIT_COLUMNS = [
 
 def _audit_table_fq(audit_catalog: str, audit_schema: str, name: str) -> str:
     return f"`{audit_catalog}`.`{audit_schema}`.`{name}`"
+
+
+def _sql_in_string_set(values: frozenset[str]) -> str:
+    return ", ".join(sql_quote(v) for v in sorted(values))
 
 
 class AuditLogger:
@@ -175,6 +190,8 @@ class AuditLogger:
         status: str,
         error_message: Optional[str] = None,
     ) -> None:
+        if status not in ALLOWED_REHYDRATION_STATUSES:
+            raise ArchiveConfigError(msg=f"Invalid rehydration audit status: {status!r}")
         audit_id = str(uuid.uuid4())
         values = [
             sql_quote(audit_id),
@@ -238,11 +255,12 @@ class AuditLogger:
         return len(rows) > 0
 
     def get_last_run_state(self, table: str, year: int) -> tuple:
+        success_sql = _sql_in_string_set(ARCHIVE_SUCCESS_STATUSES)
         sql = (
             f"SELECT status, watermark_value, source_year_count "
             f"FROM {self._archive_table()} "
             f"WHERE table_name = {sql_quote(table)} AND year = {int(year)} "
-            f"AND status IN ('ARCHIVED', 'ARCHIVED_AND_DELETED') "
+            f"AND status IN ({success_sql}) "
             f"ORDER BY created_at DESC LIMIT 1"
         )
         rows = self._spark.sql(sql).collect()
@@ -275,6 +293,7 @@ class AuditLogger:
         stale_threshold_hours: float = 4,
     ) -> tuple:
         audit_tbl = self._archive_table()
+        terminal_statuses_sql = _sql_in_string_set(ARCHIVE_TERMINAL_STATUSES)
         sql = f"""SELECT s.archive_run_id, s.created_at FROM {audit_tbl} s
 WHERE s.table_name = {sql_quote(table)}
   AND s.year = {int(year)}
@@ -285,7 +304,7 @@ WHERE s.table_name = {sql_quote(table)}
     WHERE t.table_name = s.table_name
       AND t.year = s.year
       AND t.archive_run_id = s.archive_run_id
-      AND t.status IN ('ARCHIVED','ARCHIVED_AND_DELETED','FAILED','SKIPPED','SKIPPED_CONCURRENT','DRY_RUN','NO_DATA')
+      AND t.status IN ({terminal_statuses_sql})
   )
 ORDER BY s.created_at DESC
 LIMIT 1"""

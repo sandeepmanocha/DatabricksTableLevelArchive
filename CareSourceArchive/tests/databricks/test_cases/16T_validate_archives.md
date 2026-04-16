@@ -43,7 +43,7 @@
 **Manual step** — delete one archive folder:
 
 ```python
-dbutils.fs.rm("/Volumes/sandeep_manocha/caresource_archive/caresource_archive_vol/caresource_data_samples/claims/year_2020", recurse=True)
+dbutils.fs.rm("/Volumes/sandeep_manocha/caresource_archive/caresource_archive_vol/source_data_samples/claims/year_2020", recurse=True)
 ```
 
 Re-run the notebook.

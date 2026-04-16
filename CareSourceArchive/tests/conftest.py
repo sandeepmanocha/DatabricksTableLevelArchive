@@ -18,12 +18,10 @@ def mock_run_context():
             "audit_schema": "audit",
             "default_retention_years": 7,
             "archive_base_path_prefix": "abfss://archive@storage.dfs.core.windows.net",
-            "secret_scope": "archive-dev",
             "timezone": "UTC",
             "schema_templates_table": "test_catalog.config.schema_templates",
             "table_configs_table": "test_catalog.config.table_configs",
         },
-        secrets={"warehouse_id": "test-warehouse-id"},
         job_context={
             "workspace_id": "123",
             "job_id": None,

@@ -44,7 +44,7 @@ ORDER BY created_at DESC LIMIT 5
 ### 1b. Verify folder exists
 
 ```python
-dbutils.fs.ls("/Volumes/sandeep_manocha/caresource_archive/caresource_archive_vol/caresource_data_samples/providers/year_2020")
+dbutils.fs.ls("/Volumes/sandeep_manocha/caresource_archive/caresource_archive_vol/source_data_samples/providers/year_2020")
 ```
 
 **Expect:** Folder exists with Delta files.
@@ -57,7 +57,7 @@ SET delete_after_archive = true,
     modified_by = 'manual',
     modified_at = current_timestamp(),
     change_reason = 'Test 19: enable delete_after_archive for missing folder detection'
-WHERE table_id = 'sandeep_manocha.caresource_data_samples.providers'
+WHERE table_id = 'sandeep_manocha.source_data_samples.providers'
 ```
 
 ---
@@ -69,7 +69,7 @@ WHERE table_id = 'sandeep_manocha.caresource_data_samples.providers'
 **Manual step** — run in workspace notebook:
 
 ```python
-dbutils.fs.rm("/Volumes/sandeep_manocha/caresource_archive/caresource_archive_vol/caresource_data_samples/providers/year_2020", recurse=True)
+dbutils.fs.rm("/Volumes/sandeep_manocha/caresource_archive/caresource_archive_vol/source_data_samples/providers/year_2020", recurse=True)
 ```
 
 This creates the condition: audit says `ARCHIVED_AND_DELETED` but folder is gone.
@@ -78,7 +78,7 @@ This creates the condition: audit says `ARCHIVED_AND_DELETED` but folder is gone
 
 ```bash
 databricks bundle run caresource_archive_run -t dev --profile DEFAULT \
-  --params config_table="sandeep_manocha.caresource_audit.global_settings",dry_run="false",source_catalog="sandeep_manocha",source_schema="caresource_data_samples",table_config_filter="source_table = 'providers'"
+  --params config_table="sandeep_manocha.caresource_audit.global_settings",dry_run="false",source_catalog="sandeep_manocha",source_schema="source_data_samples",table_config_filter="source_table = 'providers'"
 ```
 
 ### 2c. Check audit — status
@@ -123,7 +123,7 @@ SET delete_after_archive = false,
     modified_by = 'manual',
     modified_at = current_timestamp(),
     change_reason = 'Reset after test 19'
-WHERE table_id = 'sandeep_manocha.caresource_data_samples.providers'
+WHERE table_id = 'sandeep_manocha.source_data_samples.providers'
 ```
 
 ### 3b. Delete test-generated audit rows

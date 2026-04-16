@@ -10,7 +10,6 @@ _REQUIRED_SETTINGS_KEYS = (
     "audit_schema",
     "default_retention_years",
     "archive_base_path_prefix",
-    "secret_scope",
     "schema_templates_table",
     "table_configs_table",
 )

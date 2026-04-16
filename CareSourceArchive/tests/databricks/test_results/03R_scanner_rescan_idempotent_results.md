@@ -1,5 +1,64 @@
 # 03 — Scanner Re-scan (Idempotent) Results
 
+## Run — 2026-04-12 17:31 CDT
+
+**TL;DR:** Re-scan idempotent — PASS. Row count unchanged at 14, scan_run_id updated for 12 tables, 2 manual entries preserved. No duplicates, no watermark/is_active drift.
+
+**Branch:** `feat/delta_config_build_v3_code_reduce` (post secret-scope removal — commit `04d8fcb`)
+**Profile:** DEFAULT
+
+### Before State
+
+| Metric | Value |
+|--------|-------|
+| scanner_log rows | 42 |
+| table_configs rows | 14 |
+| Previous scan_run_id (12 tables) | `66cc37f7-267d-4e44-846d-8c0f75b785aa` |
+| Previous scan_run_id (claims, providers — manual) | `a03b2884-0cb5-4ac8-8bdb-1e1acdaf858b` |
+
+### Step 1 — Re-run scanner: **PASS**
+
+- Run URL: https://e2-demo-field-eng.cloud.databricks.com/?o=1444828305810485#job/297158067384911/run/77161359918706
+- Status: TERMINATED SUCCESS
+- Duration: ~60 seconds
+
+### Step 2 — Verify table_configs unchanged: **PASS**
+
+| table_id | watermark_column | is_active | scan_run_id |
+|---|---|---|---|
+| ...bronze_column_lineage | event_date | true | d5138b61-da92-4021-9f37-405383ca93ce |
+| ...bronze_query_history | start_time | true | d5138b61-da92-4021-9f37-405383ca93ce |
+| ...bronze_table_lineage | event_date | true | d5138b61-da92-4021-9f37-405383ca93ce |
+| ...claims | event_date | true | a03b2884-0cb5-4ac8-8bdb-1e1acdaf858b |
+| ...gold_column_usage | | false | d5138b61-da92-4021-9f37-405383ca93ce |
+| ...gold_consumer_summary | | false | d5138b61-da92-4021-9f37-405383ca93ce |
+| ...gold_daily_access_trends | query_date | true | d5138b61-da92-4021-9f37-405383ca93ce |
+| ...gold_impact_blast_radius | | false | d5138b61-da92-4021-9f37-405383ca93ce |
+| ...gold_table_access_summary | | false | d5138b61-da92-4021-9f37-405383ca93ce |
+| ...gold_table_lineage_paths | | false | d5138b61-da92-4021-9f37-405383ca93ce |
+| ...members | | false | d5138b61-da92-4021-9f37-405383ca93ce |
+| ...providers | effective_date | true | a03b2884-0cb5-4ac8-8bdb-1e1acdaf858b |
+| ...silver_query_table_access | start_time | true | d5138b61-da92-4021-9f37-405383ca93ce |
+| ...silver_table_dependencies | | false | d5138b61-da92-4021-9f37-405383ca93ce |
+
+**Verification checklist:**
+- Same row count (14 before → 14 after): **PASS**
+- scan_run_id updated to `d5138b61...` for 12 scanner-managed tables: **PASS**
+- claims & providers retained `a03b2884...` (manual entries, merge_action = preserved): **PASS**
+- merge_action in scanner_log = "updated" for 12 tables, "preserved" for 2: **PASS**
+- watermark_column and is_active unchanged: **PASS**
+- No duplicate table_id entries: **PASS**
+
+## What Happened
+
+Re-running the scanner after a full deploy produced identical table_configs — same 14 rows, same watermark columns, same active status. The scanner correctly used MERGE with "updated" action for scanner-managed tables and "preserved" for manually modified entries. Idempotency confirmed.
+
+## Next Steps
+
+- Proceed to 04T (archive dry run)
+
+---
+
 ## Run — 2026-04-10 12:53 CDT
 
 **Branch:** `feat/delta_config_build_v3_code_reduce`

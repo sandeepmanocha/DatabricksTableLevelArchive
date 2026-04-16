@@ -1,24 +1,16 @@
 # Declarative Automation Bundle — CareSource Archive
-# Deploy: databricks bundle deploy -t <dev|qa|stage|prod>
+# Deploy: databricks bundle deploy -t <dev-serverless|dev|qa|stage|prod>
 # Run setup job: databricks bundle run setup_config_tables -t <target>
 
 bundle:
   name: caresource-archive
 
 include:
-  # ── Compute switch ────────────────────────────────────────────────────────
-  # Serverless (faster startup — use for dev/testing):
-  - resources/setup_job_serverless.yml
-  - resources/archive_job_serverless.yml
-  - resources/scanner_job_serverless.yml
-  - resources/generate_test_data_job_serverless.yml
-  - resources/seed_config_job_serverless.yml
-  # Job cluster (production — comment the serverless lines above and uncomment below):
-  # - resources/setup_job.yml
-  # - resources/archive_job.yml
-  # - resources/scanner_job.yml
-  # - resources/seed_config_job.yml
-  # ─────────────────────────────────────────────────────────────────────────
+  - resources/archive_job.yml
+  - resources/setup_job.yml
+  - resources/scanner_job.yml
+  - resources/seed_config_job.yml
+  - resources/generate_test_data_job.yml
 
 variables:
   config_catalog:
@@ -29,18 +21,18 @@ variables:
     default: config
   job_run_as_service_principal:
     description: >
-      Unity Catalog service principal display name for job run_as on production targets
-      (setup, archive, rehydrate, scanner). Override per target below or with
-      bundle deploy --var job_run_as_service_principal=<name>.
+      Service principal application ID (UUID) for job run_as.
+      Override per target below or with
+      bundle deploy --var job_run_as_service_principal=<application-id>.
     default: ""
   source_schema:
     description: UC schema containing source tables to scan/archive
-    default: caresource_data_samples
+    default: source_data_samples
   archive_foreach_concurrency:
     description: Max parallel ForEach iterations for the archive job
     default: 10
   job_spark_version:
-    description: Databricks Runtime for job clusters (Jobs API spark_version, e.g. 16.4.x-scala2.12)
+    description: Databricks Runtime for job clusters (e.g. 16.4.x-scala2.12)
     default: "16.4.x-scala2.12"
   job_node_type_id:
     description: Node type for job clusters — cloud/region-specific; override per target if needed
@@ -48,15 +40,143 @@ variables:
   job_num_workers:
     description: Worker node count for job clusters (driver is in addition to workers)
     default: 2
+  job_manage_user:
+    description: User to grant CAN_MANAGE on all jobs (for visibility when deployed by CI/CD)
+    default: "sandeep.manocha@Databricks.com"
+
+# ─── Targets ──────────────────────────────────────────────────────────────────
+# dev-serverless: serverless compute (no job_clusters — fast startup)
+# dev:            job cluster compute (for testing cluster-based runs)
+# qa/stage/prod:  job cluster compute (production)
 
 targets:
-  dev:
+  # ── Dev serverless (default) ───────────────────────────────────────────────
+  dev-serverless:
     default: true
     mode: development
+    presets:
+      name_prefix: "[dev-serverless ${workspace.current_user.short_name}] "
     variables:
-      config_catalog: sandeep_manocha
-      config_schema: caresource_audit
+      config_catalog: dev2_archive
+      config_schema: metadata
+      job_run_as_service_principal: ac94d080-96a0-4866-a720-3c60ab629326
+    resources:
+      jobs:
+        setup_config_tables:
+          run_as:
+            service_principal_name: ${var.job_run_as_service_principal}
+        caresource_archive_run:
+          run_as:
+            service_principal_name: ${var.job_run_as_service_principal}
+        caresource_rehydrate:
+          run_as:
+            service_principal_name: ${var.job_run_as_service_principal}
+        caresource_scanner:
+          run_as:
+            service_principal_name: ${var.job_run_as_service_principal}
+        seed_config:
+          run_as:
+            service_principal_name: ${var.job_run_as_service_principal}
+        generate_test_data:
+          run_as:
+            service_principal_name: ${var.job_run_as_service_principal}
 
+  # ── Dev cluster ────────────────────────────────────────────────────────────
+  # Deep merge: job_clusters + tasks.job_cluster_key overlay the compute-neutral
+  # base resource files. Without this overlay (dev-serverless), tasks run serverless.
+  dev:
+    mode: development
+    presets:
+      name_prefix: "[dev-cluster ${workspace.current_user.short_name}] "
+    variables:
+      config_catalog: dev2_archive
+      config_schema: metadata
+      job_run_as_service_principal: ac94d080-96a0-4866-a720-3c60ab629326
+    resources:
+      jobs:
+        setup_config_tables:
+          run_as:
+            service_principal_name: ${var.job_run_as_service_principal}
+          job_clusters:
+            - job_cluster_key: setup_cluster
+              new_cluster:
+                spark_version: ${var.job_spark_version}
+                node_type_id: ${var.job_node_type_id}
+                num_workers: ${var.job_num_workers}
+          tasks:
+            - task_key: create_tables
+              job_cluster_key: setup_cluster
+        caresource_archive_run:
+          run_as:
+            service_principal_name: ${var.job_run_as_service_principal}
+          job_clusters:
+            - job_cluster_key: archive_cluster
+              new_cluster:
+                spark_version: ${var.job_spark_version}
+                node_type_id: ${var.job_node_type_id}
+                num_workers: ${var.job_num_workers}
+          tasks:
+            - task_key: generate_parameters
+              job_cluster_key: archive_cluster
+            - task_key: run_archive
+              for_each_task:
+                task:
+                  task_key: run_archive_iteration
+                  job_cluster_key: archive_cluster
+        caresource_rehydrate:
+          run_as:
+            service_principal_name: ${var.job_run_as_service_principal}
+          job_clusters:
+            - job_cluster_key: rehydrate_cluster
+              new_cluster:
+                spark_version: ${var.job_spark_version}
+                node_type_id: ${var.job_node_type_id}
+                num_workers: ${var.job_num_workers}
+          tasks:
+            - task_key: run_rehydrate
+              job_cluster_key: rehydrate_cluster
+        caresource_scanner:
+          run_as:
+            service_principal_name: ${var.job_run_as_service_principal}
+          job_clusters:
+            - job_cluster_key: scanner_cluster
+              new_cluster:
+                spark_version: ${var.job_spark_version}
+                node_type_id: ${var.job_node_type_id}
+                num_workers: ${var.job_num_workers}
+          tasks:
+            - task_key: run_scanner
+              job_cluster_key: scanner_cluster
+        seed_config:
+          run_as:
+            service_principal_name: ${var.job_run_as_service_principal}
+          job_clusters:
+            - job_cluster_key: seed_cluster
+              new_cluster:
+                spark_version: ${var.job_spark_version}
+                node_type_id: ${var.job_node_type_id}
+                num_workers: ${var.job_num_workers}
+          tasks:
+            - task_key: seed_config
+              job_cluster_key: seed_cluster
+            - task_key: create_tables
+              job_cluster_key: seed_cluster
+        generate_test_data:
+          run_as:
+            service_principal_name: ${var.job_run_as_service_principal}
+          job_clusters:
+            - job_cluster_key: test_data_cluster
+              new_cluster:
+                spark_version: ${var.job_spark_version}
+                node_type_id: ${var.job_node_type_id}
+                num_workers: ${var.job_num_workers}
+          tasks:
+            - task_key: generate_data
+              job_cluster_key: test_data_cluster
+
+  # ── QA ─────────────────────────────────────────────────────────────────────
+  # Deep merge: job_clusters + tasks.job_cluster_key overlay the compute-neutral
+  # base resource files. Without this overlay (dev-serverless), tasks run serverless.
   qa:
     mode: production
     variables:
@@ -68,19 +188,74 @@ targets:
         setup_config_tables:
           run_as:
             service_principal_name: ${var.job_run_as_service_principal}
+          job_clusters:
+            - job_cluster_key: setup_cluster
+              new_cluster:
+                spark_version: ${var.job_spark_version}
+                node_type_id: ${var.job_node_type_id}
+                num_workers: ${var.job_num_workers}
+          tasks:
+            - task_key: create_tables
+              job_cluster_key: setup_cluster
         caresource_archive_run:
           run_as:
             service_principal_name: ${var.job_run_as_service_principal}
+          job_clusters:
+            - job_cluster_key: archive_cluster
+              new_cluster:
+                spark_version: ${var.job_spark_version}
+                node_type_id: ${var.job_node_type_id}
+                num_workers: ${var.job_num_workers}
+          tasks:
+            - task_key: generate_parameters
+              job_cluster_key: archive_cluster
+            - task_key: run_archive
+              for_each_task:
+                task:
+                  task_key: run_archive_iteration
+                  job_cluster_key: archive_cluster
         caresource_rehydrate:
           run_as:
             service_principal_name: ${var.job_run_as_service_principal}
+          job_clusters:
+            - job_cluster_key: rehydrate_cluster
+              new_cluster:
+                spark_version: ${var.job_spark_version}
+                node_type_id: ${var.job_node_type_id}
+                num_workers: ${var.job_num_workers}
+          tasks:
+            - task_key: run_rehydrate
+              job_cluster_key: rehydrate_cluster
         caresource_scanner:
           run_as:
             service_principal_name: ${var.job_run_as_service_principal}
+          job_clusters:
+            - job_cluster_key: scanner_cluster
+              new_cluster:
+                spark_version: ${var.job_spark_version}
+                node_type_id: ${var.job_node_type_id}
+                num_workers: ${var.job_num_workers}
+          tasks:
+            - task_key: run_scanner
+              job_cluster_key: scanner_cluster
         seed_config:
           run_as:
             service_principal_name: ${var.job_run_as_service_principal}
+          job_clusters:
+            - job_cluster_key: seed_cluster
+              new_cluster:
+                spark_version: ${var.job_spark_version}
+                node_type_id: ${var.job_node_type_id}
+                num_workers: ${var.job_num_workers}
+          tasks:
+            - task_key: seed_config
+              job_cluster_key: seed_cluster
+            - task_key: create_tables
+              job_cluster_key: seed_cluster
 
+  # ── Stage ──────────────────────────────────────────────────────────────────
+  # Deep merge: job_clusters + tasks.job_cluster_key overlay the compute-neutral
+  # base resource files. Without this overlay (dev-serverless), tasks run serverless.
   stage:
     mode: production
     variables:
@@ -92,19 +267,74 @@ targets:
         setup_config_tables:
           run_as:
             service_principal_name: ${var.job_run_as_service_principal}
+          job_clusters:
+            - job_cluster_key: setup_cluster
+              new_cluster:
+                spark_version: ${var.job_spark_version}
+                node_type_id: ${var.job_node_type_id}
+                num_workers: ${var.job_num_workers}
+          tasks:
+            - task_key: create_tables
+              job_cluster_key: setup_cluster
         caresource_archive_run:
           run_as:
             service_principal_name: ${var.job_run_as_service_principal}
+          job_clusters:
+            - job_cluster_key: archive_cluster
+              new_cluster:
+                spark_version: ${var.job_spark_version}
+                node_type_id: ${var.job_node_type_id}
+                num_workers: ${var.job_num_workers}
+          tasks:
+            - task_key: generate_parameters
+              job_cluster_key: archive_cluster
+            - task_key: run_archive
+              for_each_task:
+                task:
+                  task_key: run_archive_iteration
+                  job_cluster_key: archive_cluster
         caresource_rehydrate:
           run_as:
             service_principal_name: ${var.job_run_as_service_principal}
+          job_clusters:
+            - job_cluster_key: rehydrate_cluster
+              new_cluster:
+                spark_version: ${var.job_spark_version}
+                node_type_id: ${var.job_node_type_id}
+                num_workers: ${var.job_num_workers}
+          tasks:
+            - task_key: run_rehydrate
+              job_cluster_key: rehydrate_cluster
         caresource_scanner:
           run_as:
             service_principal_name: ${var.job_run_as_service_principal}
+          job_clusters:
+            - job_cluster_key: scanner_cluster
+              new_cluster:
+                spark_version: ${var.job_spark_version}
+                node_type_id: ${var.job_node_type_id}
+                num_workers: ${var.job_num_workers}
+          tasks:
+            - task_key: run_scanner
+              job_cluster_key: scanner_cluster
         seed_config:
           run_as:
             service_principal_name: ${var.job_run_as_service_principal}
+          job_clusters:
+            - job_cluster_key: seed_cluster
+              new_cluster:
+                spark_version: ${var.job_spark_version}
+                node_type_id: ${var.job_node_type_id}
+                num_workers: ${var.job_num_workers}
+          tasks:
+            - task_key: seed_config
+              job_cluster_key: seed_cluster
+            - task_key: create_tables
+              job_cluster_key: seed_cluster
 
+  # ── Prod ───────────────────────────────────────────────────────────────────
+  # Deep merge: job_clusters + tasks.job_cluster_key overlay the compute-neutral
+  # base resource files. Without this overlay (dev-serverless), tasks run serverless.
   prod:
     mode: production
     variables:
@@ -116,15 +346,67 @@ targets:
         setup_config_tables:
           run_as:
             service_principal_name: ${var.job_run_as_service_principal}
+          job_clusters:
+            - job_cluster_key: setup_cluster
+              new_cluster:
+                spark_version: ${var.job_spark_version}
+                node_type_id: ${var.job_node_type_id}
+                num_workers: ${var.job_num_workers}
+          tasks:
+            - task_key: create_tables
+              job_cluster_key: setup_cluster
         caresource_archive_run:
           run_as:
             service_principal_name: ${var.job_run_as_service_principal}
+          job_clusters:
+            - job_cluster_key: archive_cluster
+              new_cluster:
+                spark_version: ${var.job_spark_version}
+                node_type_id: ${var.job_node_type_id}
+                num_workers: ${var.job_num_workers}
+          tasks:
+            - task_key: generate_parameters
+              job_cluster_key: archive_cluster
+            - task_key: run_archive
+              for_each_task:
+                task:
+                  task_key: run_archive_iteration
+                  job_cluster_key: archive_cluster
         caresource_rehydrate:
           run_as:
             service_principal_name: ${var.job_run_as_service_principal}
+          job_clusters:
+            - job_cluster_key: rehydrate_cluster
+              new_cluster:
+                spark_version: ${var.job_spark_version}
+                node_type_id: ${var.job_node_type_id}
+                num_workers: ${var.job_num_workers}
+          tasks:
+            - task_key: run_rehydrate
+              job_cluster_key: rehydrate_cluster
         caresource_scanner:
           run_as:
             service_principal_name: ${var.job_run_as_service_principal}
+          job_clusters:
+            - job_cluster_key: scanner_cluster
+              new_cluster:
+                spark_version: ${var.job_spark_version}
+                node_type_id: ${var.job_node_type_id}
+                num_workers: ${var.job_num_workers}
+          tasks:
+            - task_key: run_scanner
+              job_cluster_key: scanner_cluster
         seed_config:
           run_as:
             service_principal_name: ${var.job_run_as_service_principal}
+          job_clusters:
+            - job_cluster_key: seed_cluster
+              new_cluster:
+                spark_version: ${var.job_spark_version}
+                node_type_id: ${var.job_node_type_id}
+                num_workers: ${var.job_num_workers}
+          tasks:
+            - task_key: seed_config
+              job_cluster_key: seed_cluster
+            - task_key: create_tables
+              job_cluster_key: seed_cluster

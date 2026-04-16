@@ -618,6 +618,54 @@ Databricks notebooks do not define `__file__`. Instead, use `dbutils.notebook.en
 
 ---
 
+## 31. UC Grants Use Application ID, Not Display Name
+
+### SQL GRANT resolves service principals by Application ID (UUID)
+
+`GRANT ... TO \`caresource-archive-dev\`` fails with `PRINCIPAL_DOES_NOT_EXIST` even when the SP is active in the workspace. UC SQL expects the **Application ID** (UUID), not the display name.
+
+**Correct:**
+```sql
+GRANT USE CATALOG ON CATALOG dev2_archive TO `ac94d080-96a0-4866-a720-3c60ab629326`;
+```
+
+**Wrong:**
+```sql
+-- PRINCIPAL_DOES_NOT_EXIST
+GRANT USE CATALOG ON CATALOG dev2_archive TO `caresource-archive-dev`;
+```
+
+Get the Application ID from Account Console (SP detail page) or via CLI: `databricks service-principals list --profile <profile> -o json`.
+
+**Applies to:** All SQL GRANT/REVOKE statements targeting service principals. The CLI `databricks grants update` also uses the Application ID in the `principal` field.
+
+---
+
+## 32. Unity Catalog Privilege Inheritance
+
+### `USE CATALOG` does not grant `USE SCHEMA`
+
+`USE CATALOG` and `USE SCHEMA` are separate privileges in Unity Catalog. Granting `USE CATALOG` on a catalog does **not** trickle down to schemas — you must grant `USE SCHEMA` explicitly on each schema (or at the catalog level to cover all schemas).
+
+**If the SP effectively owns the catalog** (e.g. a dedicated config catalog like `qa_archive_operations`), simplify with:
+
+```sql
+ALTER CATALOG qa_archive_operations OWNER TO `<sp-name>`;
+```
+
+Owners implicitly have all privileges on all child objects, eliminating individual grants for that catalog.
+
+**Otherwise, grant both explicitly:**
+
+```sql
+GRANT USE CATALOG ON CATALOG qa_archive_operations       TO `<sp-name>`;
+GRANT USE SCHEMA  ON SCHEMA  qa_archive_operations.config TO `<sp-name>`;
+```
+
+**Applies to:** All SP grant scripts in `docs/runbooks/service-principals.md` Step 3 and any future UC permission setup.
+
+---
+
 ## 14. Rule Summary
 
 | # | Rule | Enforcement |
@@ -652,3 +700,5 @@ Databricks notebooks do not define `__file__`. Instead, use `dbutils.notebook.en
 | 28 | Handle views in table-only SQL commands | Catch `EXPECT_TABLE_NOT_VIEW` when running `DESCRIBE DETAIL` / `OPTIMIZE` / `VACUUM` on objects from `SHOW TABLES` |
 | 29 | MERGE clause order: MATCHED before NOT MATCHED | Databricks SQL requires `WHEN MATCHED` clauses before `WHEN NOT MATCHED` |
 | 30 | DDL nullability must match all code paths | Verify every writer can provide non-null values before adding `NOT NULL` to a DDL column |
+| 31 | UC grants use Application ID, not display name | SQL GRANT resolves SPs by UUID (`application_id`), not display name — display name causes `PRINCIPAL_DOES_NOT_EXIST` |
+| 32 | UC privilege inheritance: `USE CATALOG` ≠ `USE SCHEMA` | Grant both explicitly, or make the SP catalog owner for dedicated catalogs |

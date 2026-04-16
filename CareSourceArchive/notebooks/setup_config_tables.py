@@ -42,7 +42,6 @@ CREATE TABLE IF NOT EXISTS {config_catalog}.{config_schema}.global_settings (
   default_retention_years  INT       NOT NULL  COMMENT 'Default retention when table config omits it',
   dry_run_default          BOOLEAN   NOT NULL  COMMENT 'Default dry-run flag',
   timezone                 STRING    NOT NULL  COMMENT 'Spark session timezone for date comparisons',
-  secret_scope             STRING    NOT NULL  COMMENT 'Databricks secret scope name for this environment',
   schema_templates_table   STRING    NOT NULL  COMMENT 'Full 3-level UC name of schema_templates table',
   table_configs_table      STRING    NOT NULL  COMMENT 'Full 3-level UC name of table_configs table',
   archive_base_path_prefix STRING    NOT NULL  COMMENT 'Cloud storage prefix for this environment',

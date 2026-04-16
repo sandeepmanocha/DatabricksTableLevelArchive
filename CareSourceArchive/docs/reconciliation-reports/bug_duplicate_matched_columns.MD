@@ -14,7 +14,7 @@ Column discovery switched from `DESCRIBE TABLE` (which repeats partition columns
 |------|--------|
 | **Scanner log table** | `sandeep_manocha.caresource_audit.scanner_log` |
 | **Scan run id** | `b4d95c88-861f-44c0-8b8d-503b23cdee93` |
-| **Table id** | `sandeep_manocha.caresource_data_samples.bronze_table_lineage` |
+| **Table id** | `sandeep_manocha.source_data_samples.bronze_table_lineage` |
 
 ### Query (profile: `DEFAULT`)
 
@@ -29,7 +29,7 @@ SELECT
   all_matched_columns
 FROM sandeep_manocha.caresource_audit.scanner_log
 WHERE scan_run_id = 'b4d95c88-861f-44c0-8b8d-503b23cdee93'
-  AND table_id = 'sandeep_manocha.caresource_data_samples.bronze_table_lineage';
+  AND table_id = 'sandeep_manocha.source_data_samples.bronze_table_lineage';
 ```
 
 ### Observed row
@@ -43,7 +43,7 @@ WHERE scan_run_id = 'b4d95c88-861f-44c0-8b8d-503b23cdee93'
 
 ## Evidence from `DESCRIBE TABLE`
 
-`DESCRIBE TABLE sandeep_manocha.caresource_data_samples.bronze_table_lineage` returns **one** `event_date` in the main column list, then metadata rows (`# Clustering Information`, `# col_name`, …), then **`event_date` again** (partition column metadata). The physical table does not have two distinct `event_date` columns; Spark repeats the partition column in the extended DESCRIBE output.
+`DESCRIBE TABLE sandeep_manocha.source_data_samples.bronze_table_lineage` returns **one** `event_date` in the main column list, then metadata rows (`# Clustering Information`, `# col_name`, …), then **`event_date` again** (partition column metadata). The physical table does not have two distinct `event_date` columns; Spark repeats the partition column in the extended DESCRIBE output.
 
 Databricks CLI (`databricks experimental aitools tools discover-schema`, profile `DEFAULT`) also lists `event_date: date` **twice** in the column summary for this table, consistent with duplicate names in schema introspection.
 
@@ -112,7 +112,7 @@ Preferred directions:
 Findings were confirmed with Databricks CLI (default skill path: experimental AI tools) using **`--profile DEFAULT`**:
 
 - `databricks experimental aitools tools query "<SQL>" --profile DEFAULT`
-- `databricks experimental aitools tools discover-schema sandeep_manocha.caresource_data_samples.bronze_table_lineage --profile DEFAULT`
+- `databricks experimental aitools tools discover-schema sandeep_manocha.source_data_samples.bronze_table_lineage --profile DEFAULT`
 
 ## Status
 

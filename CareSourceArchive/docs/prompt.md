@@ -73,7 +73,7 @@ Build a config-driven archive and rehydration system for Databricks Delta tables
 - All parameters at runtime (not config): target catalog, schema, years, prefix
 - Supports multiple concurrent rehydrations of the same source table
   to different target locations
-- Zero-copy only: external tables (LOCATION) or SHALLOW CLONE
+- Zero-copy only: external tables (`USING DELTA LOCATION`), no SHALLOW CLONE fallback
 - Optional unified view combining main table + rehydrated years
 
 ### Architecture

@@ -8,7 +8,7 @@
 
 ## 1. Purpose
 
-Create realistic healthcare test data in `sandeep_manocha.caresource_data_samples` for end-to-end interactive testing of the archive system. Covers happy path archiving, failure scenarios (UC-1 through UC-6 from the handle-failed-archives spec), manual intervention steps, re-runs, and parallel ForEach behavior.
+Create realistic healthcare test data in `sandeep_manocha.source_data_samples` for end-to-end interactive testing of the archive system. Covers happy path archiving, failure scenarios (UC-1 through UC-6 from the handle-failed-archives spec), manual intervention steps, re-runs, and parallel ForEach behavior.
 
 ---
 
@@ -97,7 +97,7 @@ Single notebook at `tests/interactive/generate_test_data.py`.
 | Cell | Content |
 |------|---------|
 | 1 | `%pip install faker` + restart Python |
-| 2 | Widgets: `catalog` (default `sandeep_manocha`), `schema` (default `caresource_data_samples`) |
+| 2 | Widgets: `catalog` (default `sandeep_manocha`), `schema` (default `source_data_samples`) |
 | 3 | Verify catalog and schema exist (raise if not — no auto-creation) |
 | 4 | Generate and write `claims` table |
 | 5 | Generate and write `members` table |
@@ -200,7 +200,7 @@ databricks bundle run caresource_rehydrate -t dev \
   --params config_table=sandeep_manocha.caresource_audit.global_settings,source_table=claims,years=2020,target_catalog=sandeep_manocha,target_schema=caresource_rehydrated,archive_base_path=<archive_base_path from table_configs>
 ```
 
-The `archive_base_path` value comes from the `table_configs` entry for claims (e.g., `/Volumes/sandeep_manocha/caresource_archive/caresource_archive_vol/caresource_data_samples/claims`).
+The `archive_base_path` value comes from the `table_configs` entry for claims (e.g., `/Volumes/sandeep_manocha/caresource_archive/caresource_archive_vol/source_data_samples/claims`).
 
 **What to check:** External table created. Unified view (if created) combines current + restored data. Rehydration audit log has a SUCCESS entry.
 

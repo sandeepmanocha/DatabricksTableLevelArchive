@@ -43,6 +43,26 @@ class ArchiveError(Exception):
         },
     }
 
+    _NOT_FOUND_FRAGMENTS = (
+        "java.io.FileNotFoundException",
+        "FileNotFoundException",
+        "No such file or directory",
+        "PATH_NOT_FOUND",
+        "does not exist",
+    )
+
+    @staticmethod
+    def is_not_found(exc: Exception) -> bool:
+        """True when *exc* signals a missing path rather than an access or infra error.
+
+        Databricks ``dbutils.fs`` wraps Java exceptions in a generic Python
+        ``Exception``.  There is no typed ``FileNotFoundError``; the only
+        reliable signal is the message text.  We check against known fragments
+        that appear across classic and serverless runtimes.
+        """
+        msg = str(exc)
+        return any(f in msg for f in ArchiveError._NOT_FOUND_FRAGMENTS)
+
     @staticmethod
     def diagnostic_message(status, reason, **kwargs):
         reasons = ArchiveError._DIAGNOSTIC_TEMPLATES.get(status, {})

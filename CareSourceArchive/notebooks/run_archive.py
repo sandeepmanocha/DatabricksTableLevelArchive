@@ -47,7 +47,6 @@ from src.config import load_settings
 from src.utils import (
     RunContext,
     configure_logging,
-    load_secrets,
 )
 
 # COMMAND ----------
@@ -69,10 +68,8 @@ configure_logging(archive_run_id)
 _log = logging.getLogger("caresource_archive.notebook.run_archive")
 
 settings = load_settings(spark, config_table)
-secrets = load_secrets(settings, dbutils)
 ctx = RunContext(
     settings=settings,
-    secrets=secrets,
     job_context=_job_context,
     archive_run_id=archive_run_id,
 )

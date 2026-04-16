@@ -52,7 +52,7 @@
 | Module | Feature | Status | Tests | Notes |
 |--------|---------|--------|-------|-------|
 | src/exceptions.py | F13 | Tested | 14/14 passing | ArchiveConfigError, ArchiveOperationError, ArchiveVerificationError |
-| src/utils.py | F1 | Tested | 20/20 passing | RunContext dataclass + helpers + configure_logging() + load_secrets() |
+| src/utils.py | F1 | Tested | 16/16 passing | RunContext dataclass + helpers + configure_logging() |
 | src/audit.py | F2 | Tested | 30/30 passing | AuditLogger class + concurrency check + watermark tracking |
 | src/config.py | F3 | Tested | 19/19 passing | Pure functions: read Delta config tables, validate + CFG-10 (`min_table_size_gb` validation) |
 | src/conditions.py | F4 | Tested | 17/17 passing | Pure functions: SQL generation |
@@ -320,3 +320,63 @@
 **Final:** 271 passed (+9 new), 1 pre-existing failure (`test_scanner.py::test_scn16_merge_insert_includes_scan_run_id`)
 
 **Diagnostic Messaging status: COMPLETE**
+
+### Prerequisites Restructure + Secret Scope Removal (2026-04-12)
+
+**Branch:** `feat/delta_config_build_v3_code_reduce`
+**Commit:** `04d8fcb`
+**Revert point:** `8db712a` (commit immediately before this changeset)
+**To revert:** `git revert 04d8fcb` (safe — creates a new undo commit) or `git reset --hard 8db712a` (destructive — discards this commit entirely)
+
+#### Part 1 — Prerequisites split into smaller files
+
+Broke `docs/prerequisites.md` (568 lines) into 4 focused runbooks:
+
+| File | Lines | Contents |
+|------|-------|----------|
+| `docs/prerequisites.md` | ~114 | Slim checklist + per-env infra + source table info + who does what + runbook index |
+| `docs/runbooks/service-principals.md` | 79 | SP creation (UI + CLI), add to workspace |
+| `docs/runbooks/uc-permissions.md` | 73 | Required grants table + SQL + verification |
+| `docs/runbooks/qa-environment.md` | 110 | End-to-end QA walkthrough |
+
+**Fixes applied during the split:**
+- "Audit catalog + schema" → "Config catalog + schema" with names matching `databricks.yml` (`qa_archive_operations.config`, etc.)
+- Grant SQL updated to reference config catalog, not `qa_archive.audit`
+- "NULL date column" → "NULL watermark column"
+- QA runbook notebook parameters: `audit_catalog`/`audit_schema` → `config_catalog`/`config_schema`
+- Added note that setup creates 7 tables (4 config + 3 audit/log)
+
+#### Part 2 — OAuth M2M credential removal from docs
+
+Removed Step 3 (Generate OAuth M2M credentials) from service-principals runbook and all M2M references from prerequisites. Jobs authenticate via DABs `run_as`, not M2M secrets.
+
+#### Part 3 — Full secret scope removal (code + docs)
+
+**Rationale:** `load_secrets()` loaded `warehouse_id`, `client_id`, `client_secret` from Databricks secret scopes, but none were ever used downstream. `spark.sql()` executes on whatever compute the job/notebook is attached to (classic cluster or serverless) — no warehouse ID needed. SP authentication is handled by DABs `run_as`. The entire secrets pipeline was dead code.
+
+**Code removed:**
+- `src/utils.py`: `load_secrets()`, `_KNOWN_SECRET_KEYS`, `secrets` field from `RunContext` dataclass
+- `src/config.py`: `"secret_scope"` from `_REQUIRED_SETTINGS_KEYS`
+- `notebooks/setup_config_tables.py`: `secret_scope` column from `global_settings` DDL
+- `notebooks/seed_config.py`: `secret_scope` from seed INSERT
+- `notebooks/run_archive.py`, `run_rehydrate.py`, `manual/validate_archives.py`: `load_secrets` import/call, `secrets=` from `RunContext`
+
+**Tests removed/updated:**
+- `test_utils.py`: Entire `TestLoadSecrets` class (4 tests), `secrets` from `RunContext` tests
+- `test_config.py`: `secret_scope` from fixtures and required-keys assertion
+- `test_archiver.py`: `secrets={}` from 3 `RunContext` constructors, `secret_scope` from settings fixture
+- `test_rehydrator.py`: `secrets={}` from `RunContext`
+- `conftest.py`: `secret_scope` from settings, `secrets=` from `RunContext`
+- `test_audit.py`: `secrets` field from `_TestRunContext` and `_make_ctx`
+
+**Docs removed/updated:**
+- Deleted `docs/runbooks/secret-scopes.md`
+- `prerequisites.md`: removed all secret scope checklist items, scope from per-env table, scope from admin roles
+- `runbooks/uc-permissions.md`: removed secret scope ACL row
+- `runbooks/qa-environment.md`: removed step 5 (secret scope creation)
+
+**Known remaining doc debt:** 8 other doc files (`design.md`, `requirements.md`, `requirements-summary.md`, `features.md`, `development-rules.md`, `high-level-architecture.md`, `images/architecture.dot`, `reconciliation-reports/source_code_summary.md`) still reference `secret_scope`/`load_secrets`. These are historical design docs; will clean in a future pass.
+
+**Tests:** 267 passed, 1 pre-existing failure (unchanged). Net: -4 tests from `TestLoadSecrets` removal, offset by prior additions.
+
+**Prerequisites Restructure + Secret Scope Removal status: COMPLETE**

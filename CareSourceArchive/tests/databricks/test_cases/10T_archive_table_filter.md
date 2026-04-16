@@ -29,7 +29,7 @@
 
 ```bash
 databricks bundle run caresource_archive_run -t dev --profile DEFAULT \
-  --params config_table="sandeep_manocha.caresource_audit.global_settings",dry_run="true",table_config_filter="source_table = 'claims'",source_catalog="sandeep_manocha",source_schema="caresource_data_samples"
+  --params config_table="sandeep_manocha.caresource_audit.global_settings",dry_run="true",table_config_filter="source_table = 'claims'",source_catalog="sandeep_manocha",source_schema="source_data_samples"
 ```
 
 ### 2. Check audit log

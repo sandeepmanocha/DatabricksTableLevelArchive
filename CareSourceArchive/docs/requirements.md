@@ -89,7 +89,7 @@ Production-grade data lifecycle management for Databricks Delta tables. Automati
 |----|------------|
 | RHY-01 | All rehydration parameters are runtime (not config) — catalog, schema, years, table prefix |
 | RHY-02 | Multiple users can rehydrate the same source table to different target catalogs/schemas simultaneously |
-| RHY-03 | Zero-copy only — external table with LOCATION (preferred), SHALLOW CLONE (fallback) |
+| RHY-03 | Zero-copy only — external table with `USING DELTA LOCATION`. No `SHALLOW CLONE` fallback — LOCATION failure raises `ArchiveOperationError` with table, year, and root cause |
 | RHY-04 | Create unified view combining main table + rehydrated year tables (optional) |
 | RHY-05 | Create target schema if it doesn't exist |
 | RHY-06 | Verify archive folder exists before attempting to create external table |
@@ -200,7 +200,7 @@ Production-grade data lifecycle management for Databricks Delta tables. Automati
 | D5 | Dry-run defaults to true | Safety first — see blast radius before executing |
 | D6 | Modular package + thin wrappers | Testable, parallel-developable, no code duplication |
 | D7 | Rehydration is runtime-only | Supports multiple concurrent rehydrations to different targets |
-| D8 | Enumerated audit statuses: Archive = `STARTED`, `DRY_RUN`, `ARCHIVED`, `ARCHIVED_AND_DELETED`, `FAILED`, `SKIPPED`, `SKIPPED_CONCURRENT`, `NO_DATA`. Rehydration = `SUCCESS`, `PARTIAL_SUCCESS`, `FAILED` | Clear, queryable values. `STARTED` enables concurrency detection. `ARCHIVED` vs `ARCHIVED_AND_DELETED` enables resumability. `SKIPPED_CONCURRENT` distinguishes intentional skips from conflict skips |
+| D8 | Enumerated audit statuses: Archive = `STARTED`, `DRY_RUN`, `ARCHIVED`, `ARCHIVED_AND_DELETED`, `FAILED`, `SKIPPED`, `SKIPPED_CONCURRENT`, `NO_DATA`. Rehydration = `COMPLETED`, `PARTIAL_COMPLETED`, `FAILED` | Clear, queryable values. `STARTED` enables concurrency detection. `ARCHIVED` vs `ARCHIVED_AND_DELETED` enables resumability. `SKIPPED_CONCURRENT` distinguishes intentional skips from conflict skips. Rehydration uses `COMPLETED` (all requested years restored), `PARTIAL_COMPLETED` (some years skipped due to missing archive folders), `FAILED` (no years restored or hard error) |
 | D9 | Store Databricks job context (workspace_id, job_id, job_run_id, task_run_id) in audit tables | Enables joining audit data with `system.lakeflow.job_run_timeline` for operational monitoring |
 | D10 | Write `_archive_metadata.json` per year folder | Human-readable provenance for disaster recovery — no code reads it at runtime |
 | D11 | Selective OOP: `RunContext` dataclass + `AuditLogger`, `ArchiveEngine`, `RehydrationEngine` classes. Pure functions for config, conditions, scanner | Eliminates parameter threading for shared state while keeping stateless modules simple |

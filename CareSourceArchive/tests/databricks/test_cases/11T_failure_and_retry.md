@@ -32,9 +32,9 @@ This test can run on **any table** that has been fully archived. Replace `<TABLE
 
 | Table | `table_id` | Watermark Column | Years |
 |-------|-----------|-----------------|-------|
-| providers | `sandeep_manocha.caresource_data_samples.providers` | `effective_date` | 2020-2025 |
-| claims | `sandeep_manocha.caresource_data_samples.claims` | `event_date` | 2018-2025 |
-| members | `sandeep_manocha.caresource_data_samples.members` | `start_date` | 2019-2025 |
+| providers | `sandeep_manocha.source_data_samples.providers` | `effective_date` | 2020-2025 |
+| claims | `sandeep_manocha.source_data_samples.claims` | `event_date` | 2018-2025 |
+| members | `sandeep_manocha.source_data_samples.members` | `start_date` | 2019-2025 |
 
 ### Watermark considerations for new data insertion
 
@@ -54,7 +54,7 @@ Archive the target table normally. All eligible years should show STARTED → AR
 
 ```bash
 databricks bundle run caresource_archive_run -t dev --profile DEFAULT \
-  --params config_table="sandeep_manocha.caresource_audit.global_settings",dry_run="false",source_catalog="sandeep_manocha",source_schema="caresource_data_samples",table_config_filter="table_id = '<TABLE_ID>'"
+  --params config_table="sandeep_manocha.caresource_audit.global_settings",dry_run="false",source_catalog="sandeep_manocha",source_schema="source_data_samples",table_config_filter="table_id = '<TABLE_ID>'"
 ```
 
 **Expect:**
@@ -80,7 +80,7 @@ ORDER BY year
 Example for **providers** (watermark `2023-12-30`):
 
 ```sql
-INSERT INTO sandeep_manocha.caresource_data_samples.providers
+INSERT INTO sandeep_manocha.source_data_samples.providers
   (provider_id, provider_name, specialty, npi, effective_date, state, is_active)
 VALUES
   ('PRV-FAIL-04', 'Dr. FailTest4', 'Cardiology',  '9990000004', '2023-12-31', 'OH', true),
@@ -92,7 +92,7 @@ VALUES
 Example for **claims** (all watermarks at 12-31):
 
 ```sql
-INSERT INTO sandeep_manocha.caresource_data_samples.claims VALUES
+INSERT INTO sandeep_manocha.source_data_samples.claims VALUES
   ('CLM-FAIL-01', 'MBR-00001', 'PRV-0001', 'Medical', 'J06.9', 150.00, 'Closed', DATE'2026-03-15', current_timestamp()),
   ('CLM-FAIL-02', 'MBR-00002', 'PRV-0002', 'Dental',  'E11.9', 250.00, 'Active', DATE'2026-04-01', current_timestamp())
 ```
@@ -137,7 +137,7 @@ ORDER BY created_at DESC LIMIT 10
 
 ```sql
 UPDATE sandeep_manocha.caresource_audit.table_configs
-SET archive_base_path = '/Volumes/sandeep_manocha/caresource_archive/caresource_archive_vol/caresource_data_samples',
+SET archive_base_path = '/Volumes/sandeep_manocha/caresource_archive/caresource_archive_vol/source_data_samples',
     modified_by = 'manual',
     modified_at = current_timestamp(),
     change_reason = 'Fix: restore correct archive path'

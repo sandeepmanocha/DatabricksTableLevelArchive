@@ -1,7 +1,9 @@
+import json
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+from src.exceptions import ArchiveOperationError
 from src.rehydrator import RehydrationEngine
 from src.utils import RunContext
 
@@ -9,7 +11,6 @@ from src.utils import RunContext
 def _ctx():
     return RunContext(
         settings={"audit_catalog": "ac", "audit_schema": "asch"},
-        secrets={},
         job_context={},
         archive_run_id="rid-1",
     )
@@ -21,11 +22,7 @@ def rehydration_engine():
     audit = MagicMock()
     spark = MagicMock()
     eng = RehydrationEngine(ctx, audit, spark)
-    return (eng, ctx, audit, spark)
-
-
-def _dbutils():
-    return MagicMock()
+    return eng, audit, spark
 
 
 def _params(**overrides):
@@ -35,142 +32,186 @@ def _params(**overrides):
         "target_catalog": "tgt_cat",
         "target_schema": "tgt_sch",
         "years": [2020, 2021],
-        "dbutils": _dbutils(),
+        "available_archive_years": [2020, 2021],
+        "table_prefix": "",
+        "create_unified_view": True,
     }
     base.update(overrides)
     return base
 
 
-def test_rhy01_init_stores_ctx_audit_spark(rehydration_engine):
-    eng, ctx, audit, spark = rehydration_engine
-    assert eng._ctx is ctx
-    assert eng._audit is audit
-    assert eng._spark is spark
+def test_status_completed_when_all_years_restored(rehydration_engine):
+    eng, audit, _spark = rehydration_engine
+    result = eng.run(_params(years=[2020, 2021], available_archive_years=[2020, 2021]))
+    assert result["tables_created"] == 2
+    assert result["status"] == "COMPLETED"
+    assert result["restored_years"] == [2020, 2021]
+    assert result["skipped_years"] == []
+    audit.ensure_rehydration_audit_table.assert_called_once()
+    kwargs = audit.log_rehydrate.call_args.kwargs
+    assert kwargs["status"] == "COMPLETED"
+    assert kwargs["tables_created"] == 2
+    assert kwargs["error_message"] is None
+    assert kwargs["source"] == "live_cat.live_sch.claims"
+    assert kwargs["target_catalog"] == "tgt_cat"
+    assert kwargs["target_schema"] == "tgt_sch"
 
 
-def test_rhy02_run_no_shared_state_between_different_targets(rehydration_engine):
-    eng, ctx, audit, spark = rehydration_engine
-    with patch("src.rehydrator.archive_folder_exists", return_value=True):
-        eng.run(
-            _params(
-                target_catalog="a",
-                target_schema="s1",
-                years=[2020],
-            )
-        )
-        eng.run(
-            _params(
-                target_catalog="b",
-                target_schema="s2",
-                years=[2020],
-            )
-        )
-    sql_texts = [c[0][0] for c in spark.sql.call_args_list]
-    view_sqls = [s for s in sql_texts if "CREATE OR REPLACE VIEW" in s]
-    assert len(view_sqls) == 2
-    assert "a.s1.claims_unified" in view_sqls[0]
-    assert "b.s2.claims_unified" in view_sqls[1]
-    create_ext = [s for s in sql_texts if "claims_year_2020" in s and "CREATE TABLE" in s]
-    assert any("a.s1.claims_year_2020" in s for s in create_ext)
-    assert any("b.s2.claims_year_2020" in s for s in create_ext)
+def test_status_partial_completed_when_some_years_missing(rehydration_engine):
+    eng, audit, _spark = rehydration_engine
+    result = eng.run(_params(years=[2020, 2021], available_archive_years=[2020]))
+    assert result["tables_created"] == 1
+    assert result["status"] == "PARTIAL_COMPLETED"
+    assert result["restored_years"] == [2020]
+    assert result["skipped_years"] == [2021]
+    kwargs = audit.log_rehydrate.call_args.kwargs
+    assert kwargs["status"] == "PARTIAL_COMPLETED"
+    assert kwargs["tables_created"] == 1
+    assert kwargs["error_message"] is None
+    assert kwargs["source"] == "live_cat.live_sch.claims"
+    assert kwargs["target_catalog"] == "tgt_cat"
+    assert kwargs["target_schema"] == "tgt_sch"
 
 
-def test_rhy03_location_preferred_shallow_clone_fallback(rehydration_engine):
-    eng, ctx, audit, spark = rehydration_engine
+def test_failed_when_no_year_restored(rehydration_engine):
+    eng, audit, _spark = rehydration_engine
+    with pytest.raises(ArchiveOperationError) as exc:
+        eng.run(_params(years=[2020], available_archive_years=[]))
+    assert exc.value.reason == "no_years_restored"
+    assert exc.value.year == "all"
+    assert exc.value.operation == "rehydrate"
+    kwargs = audit.log_rehydrate.call_args.kwargs
+    assert kwargs["status"] == "FAILED"
+    assert kwargs["tables_created"] == 0
+    assert kwargs["error_message"] is not None
+
+
+def test_location_create_failure_raises_typed_error_without_clone(rehydration_engine):
+    eng, audit, spark = rehydration_engine
     loc_path = "abfss://c@acct.dfs.core.windows.net/archive/root/claims/year_2020"
 
-    def sql_side_effect(q):
-        if "USING DELTA LOCATION" in q and loc_path in q:
+    def side_effect(sql):
+        if "USING DELTA LOCATION" in sql and loc_path in sql:
             raise RuntimeError("location bind failed")
         return MagicMock()
 
-    spark.sql.side_effect = sql_side_effect
-    with patch("src.rehydrator.archive_folder_exists", return_value=True):
-        out = eng.run(_params(years=[2020]))
-    sql_texts = [c[0][0] for c in spark.sql.call_args_list]
-    assert any("USING DELTA LOCATION" in s and loc_path in s for s in sql_texts)
-    assert any("SHALLOW CLONE" in s and f"delta.`{loc_path}`" in s for s in sql_texts)
-    assert out["tables_created"] == 1
+    spark.sql.side_effect = side_effect
+    with pytest.raises(ArchiveOperationError) as exc:
+        eng.run(_params(years=[2020], available_archive_years=[2020]))
+    sqls = [c[0][0] for c in spark.sql.call_args_list]
+    assert any("USING DELTA LOCATION" in sql for sql in sqls)
+    assert not any("SHALLOW CLONE" in sql for sql in sqls)
+    assert exc.value.table == "live_cat.live_sch.claims"
+    assert exc.value.year == 2020
+    assert exc.value.operation == "create_external_table"
+    assert "location bind failed" in str(exc.value)
+    kwargs = audit.log_rehydrate.call_args.kwargs
+    assert kwargs["status"] == "FAILED"
+    assert kwargs["tables_created"] == 0
+    assert kwargs["error_message"] is not None
 
 
-def test_rhy04_unified_view_union_all_source_and_external(rehydration_engine):
-    eng, ctx, audit, spark = rehydration_engine
-    with patch("src.rehydrator.archive_folder_exists", return_value=True):
-        eng.run(_params(years=[2020, 2021]))
-    view_sqls = [
-        c[0][0] for c in spark.sql.call_args_list if "CREATE OR REPLACE VIEW" in c[0][0]
-    ]
-    assert len(view_sqls) == 1
-    v = view_sqls[0]
-    assert "UNION ALL" in v
-    assert "FROM live_cat.live_sch.claims" in v.replace("\n", " ")
-    assert "FROM tgt_cat.tgt_sch.claims_year_2020" in v.replace("\n", " ")
-    assert "FROM tgt_cat.tgt_sch.claims_year_2021" in v.replace("\n", " ")
+def test_runtime_table_prefix_applies_to_external_tables_and_view(rehydration_engine):
+    eng, _audit, spark = rehydration_engine
+    result = eng.run(
+        _params(years=[2020], available_archive_years=[2020], table_prefix="rhy_")
+    )
+    sqls = [c[0][0] for c in spark.sql.call_args_list]
+    assert any("tgt_cat.tgt_sch.rhy_claims_year_2020" in sql for sql in sqls)
+    view_sql = next(sql for sql in sqls if sql.startswith("CREATE OR REPLACE VIEW"))
+    assert "CREATE OR REPLACE VIEW tgt_cat.tgt_sch.rhy_claims_unified" in view_sql
+    assert "SELECT * FROM live_cat.live_sch.claims" in view_sql
+    assert "UNION ALL" in view_sql
+    assert "SELECT * FROM tgt_cat.tgt_sch.rhy_claims_year_2020" in view_sql
+    assert result["view_name"] == "tgt_cat.tgt_sch.rhy_claims_unified"
 
 
-def test_rhy05_skips_year_when_archive_folder_missing(rehydration_engine):
-    eng, ctx, audit, spark = rehydration_engine
-
-    def folder_exists(dbutils, base_path, table_name, year):
-        return year == 2020
-
-    with patch("src.rehydrator.archive_folder_exists", side_effect=folder_exists):
-        out = eng.run(_params(years=[2020, 2021]))
-    sql_texts = [c[0][0] for c in spark.sql.call_args_list]
-    ext_create = [s for s in sql_texts if "claims_year_" in s and "CREATE TABLE" in s]
-    assert any("claims_year_2020" in s for s in ext_create)
-    assert not any("claims_year_2021" in s for s in ext_create)
-    assert out["tables_created"] == 1
-    view_sqls = [s for s in sql_texts if "CREATE OR REPLACE VIEW" in s]
-    assert len(view_sqls) == 1
-    assert "claims_year_2021" not in view_sqls[0]
+def test_runtime_can_disable_unified_view_creation(rehydration_engine):
+    eng, _audit, spark = rehydration_engine
+    result = eng.run(
+        _params(
+            years=[2020],
+            available_archive_years=[2020],
+            create_unified_view=False,
+        )
+    )
+    sqls = [c[0][0] for c in spark.sql.call_args_list]
+    assert not any("CREATE OR REPLACE VIEW" in sql for sql in sqls)
+    assert result["view_name"] is None
 
 
-def test_rhy06_audit_completed_on_success_failed_on_error(rehydration_engine):
-    eng, ctx, audit, spark = rehydration_engine
-    with patch("src.rehydrator.archive_folder_exists", return_value=True):
-        eng.run(_params(years=[2020]))
-    audit.log_rehydrate.assert_called()
-    kw = audit.log_rehydrate.call_args.kwargs
-    assert kw["status"] == "COMPLETED"
-    assert kw["tables_created"] == 1
-    assert kw["error_message"] is None
+def test_audit_write_failure_logs_fallback_and_preserves_context(rehydration_engine):
+    eng, audit, spark = rehydration_engine
 
-    audit.reset_mock()
-    spark.reset_mock()
-
-    def boom(q):
-        if "CREATE OR REPLACE VIEW" in q:
+    def sql_boom(sql):
+        if "CREATE OR REPLACE VIEW" in sql:
             raise RuntimeError("view failed")
         return MagicMock()
 
-    spark.sql.side_effect = boom
-    with patch("src.rehydrator.archive_folder_exists", return_value=True):
-        with pytest.raises(Exception):
-            eng.run(_params(years=[2020]))
-    audit.log_rehydrate.assert_called()
-    kw2 = audit.log_rehydrate.call_args.kwargs
-    assert kw2["status"] == "FAILED"
-    assert kw2["error_message"] is not None
+    spark.sql.side_effect = sql_boom
+    audit.log_rehydrate.side_effect = RuntimeError("audit write failed")
+    with patch("src.rehydrator.LOGGER.error") as error_log:
+        with pytest.raises(ArchiveOperationError) as exc:
+            eng.run(_params(years=[2020], available_archive_years=[2020]))
+    assert "view failed" in str(exc.value)
+    assert "audit write failed" in str(exc.value)
+    assert error_log.call_count == 1
+    fallback_payload = json.loads(error_log.call_args.args[0])
+    assert fallback_payload["event"] == "rehydration_audit_write_failed"
+    assert fallback_payload["created_years"] == [2020]
+    assert fallback_payload["skipped_years"] == []
+    assert fallback_payload["tables_created"] == 1
+    assert fallback_payload["status"] == "FAILED"
+    assert "view failed" in fallback_payload["primary_error"]
+    assert "audit write failed" in fallback_payload["audit_error"]
 
 
-def test_roll01_unified_view_combines_live_and_archived(rehydration_engine):
-    eng, ctx, audit, spark = rehydration_engine
-    with patch("src.rehydrator.archive_folder_exists", return_value=True):
-        eng.run(_params(years=[2019]))
-    view_sqls = [
-        c[0][0] for c in spark.sql.call_args_list if "CREATE OR REPLACE VIEW" in c[0][0]
-    ]
-    body = view_sqls[0]
-    idx_live = body.find("live_cat.live_sch.claims")
-    idx_arch = body.find("tgt_cat.tgt_sch.claims_year_2019")
-    assert idx_live != -1 and idx_arch != -1
-    assert idx_live < idx_arch
+@pytest.mark.parametrize(
+    "missing_key",
+    [
+        "archive_base_path",
+        "source_table",
+        "target_catalog",
+        "target_schema",
+        "years",
+        "available_archive_years",
+    ],
+)
+def test_missing_required_param_fails_with_actionable_error(rehydration_engine, missing_key):
+    eng, audit, _spark = rehydration_engine
+    params = _params(years=[2020])
+    del params[missing_key]
+    with pytest.raises(ArchiveOperationError, match=missing_key) as exc:
+        eng.run(params)
+    assert exc.value.reason == "invalid_params"
+    kwargs = audit.log_rehydrate.call_args.kwargs
+    assert kwargs["status"] == "FAILED"
 
 
-def test_rhy05_schema_created_before_rehydration(rehydration_engine):
-    eng, ctx, audit, spark = rehydration_engine
-    with patch("src.rehydrator.archive_folder_exists", return_value=True):
-        with patch("src.rehydrator.create_schema_if_not_exists") as mock_create_schema:
-            eng.run(_params(target_catalog="tc", target_schema="ts", years=[2020]))
-            mock_create_schema.assert_called_once_with(spark, "tc", "ts")
+def test_view_creation_failure_raises_typed_error(rehydration_engine):
+    eng, audit, spark = rehydration_engine
+
+    def side_effect(sql):
+        if "CREATE OR REPLACE VIEW" in sql:
+            raise RuntimeError("view grant denied")
+        return MagicMock()
+
+    spark.sql.side_effect = side_effect
+    with pytest.raises(ArchiveOperationError) as exc:
+        eng.run(_params(years=[2020], available_archive_years=[2020]))
+    assert exc.value.operation == "create_unified_view"
+    assert exc.value.reason == "view_create_failed"
+    assert "view grant denied" in str(exc.value)
+    kwargs = audit.log_rehydrate.call_args.kwargs
+    assert kwargs["status"] == "FAILED"
+    assert kwargs["tables_created"] == 1
+
+
+def test_empty_years_list_raises_no_years_restored(rehydration_engine):
+    eng, audit, _spark = rehydration_engine
+    with pytest.raises(ArchiveOperationError) as exc:
+        eng.run(_params(years=[], available_archive_years=[]))
+    assert exc.value.reason == "no_years_restored"
+    kwargs = audit.log_rehydrate.call_args.kwargs
+    assert kwargs["status"] == "FAILED"
+    assert kwargs["tables_created"] == 0

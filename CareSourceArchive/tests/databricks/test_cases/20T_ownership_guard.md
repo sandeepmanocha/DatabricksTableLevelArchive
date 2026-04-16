@@ -33,7 +33,7 @@ Start clean: no existing archive folders or audit rows for providers.
 
 ```bash
 databricks fs rm -r \
-  dbfs:/Volumes/sandeep_manocha/caresource_archive/caresource_archive_vol/caresource_data_samples/providers \
+  dbfs:/Volumes/sandeep_manocha/caresource_archive/caresource_archive_vol/source_data_samples/providers \
   --profile DEFAULT
 ```
 
@@ -54,7 +54,7 @@ SET delete_after_archive = true,
     modified_by = 'manual',
     modified_at = current_timestamp(),
     change_reason = 'Test 20: ownership guard test'
-WHERE table_id = 'sandeep_manocha.caresource_data_samples.providers'
+WHERE table_id = 'sandeep_manocha.source_data_samples.providers'
 ```
 
 ### 1d. Verify clean state
@@ -72,7 +72,7 @@ WHERE table_name LIKE '%providers%'
 ```bash
 databricks experimental aitools tools query \
   "SELECT YEAR(effective_date) AS yr, COUNT(*) AS cnt
-   FROM sandeep_manocha.caresource_data_samples.providers
+   FROM sandeep_manocha.source_data_samples.providers
    GROUP BY 1 ORDER BY 1" \
   --profile DEFAULT
 ```
@@ -87,7 +87,7 @@ Record counts — source should be untouched after this test.
 
 ```bash
 databricks bundle run caresource_archive_run -t dev --profile DEFAULT \
-  --params config_table="sandeep_manocha.caresource_audit.global_settings",dry_run="false",source_catalog="sandeep_manocha",source_schema="caresource_data_samples",table_config_filter="source_table = 'providers'"
+  --params config_table="sandeep_manocha.caresource_audit.global_settings",dry_run="false",source_catalog="sandeep_manocha",source_schema="source_data_samples",table_config_filter="source_table = 'providers'"
 ```
 
 **Wait for completion.** This should produce STARTED → ARCHIVED → ARCHIVED_AND_DELETED for eligible years (the run owns its own ARCHIVED row, so delete proceeds).
@@ -113,7 +113,7 @@ Now we need to re-create a scenario where the archive exists but a *different* r
 ```sql
 -- Remove the ARCHIVED_AND_DELETED row (so resume-delete triggers)
 DELETE FROM sandeep_manocha.caresource_audit.archive_audit_log
-WHERE table_name = 'sandeep_manocha.caresource_data_samples.providers'
+WHERE table_name = 'sandeep_manocha.source_data_samples.providers'
   AND year = 2020
   AND status = 'ARCHIVED_AND_DELETED'
 ```
@@ -122,7 +122,7 @@ WHERE table_name = 'sandeep_manocha.caresource_data_samples.providers'
 -- Change the ARCHIVED row's archive_run_id to a fake foreign run
 UPDATE sandeep_manocha.caresource_audit.archive_audit_log
 SET archive_run_id = 'fake-foreign-run-00000'
-WHERE table_name = 'sandeep_manocha.caresource_data_samples.providers'
+WHERE table_name = 'sandeep_manocha.source_data_samples.providers'
   AND year = 2020
   AND status = 'ARCHIVED'
 ```
@@ -132,7 +132,7 @@ WHERE table_name = 'sandeep_manocha.caresource_data_samples.providers'
 ```sql
 SELECT table_name, year, status, archive_run_id
 FROM sandeep_manocha.caresource_audit.archive_audit_log
-WHERE table_name = 'sandeep_manocha.caresource_data_samples.providers'
+WHERE table_name = 'sandeep_manocha.source_data_samples.providers'
   AND year = 2020
 ORDER BY created_at DESC
 ```
@@ -145,7 +145,7 @@ This creates the condition: `ARCHIVED` + `delete_after_archive=true` → RESUME_
 
 ```bash
 databricks bundle run caresource_archive_run -t dev --profile DEFAULT \
-  --params config_table="sandeep_manocha.caresource_audit.global_settings",dry_run="false",source_catalog="sandeep_manocha",source_schema="caresource_data_samples",table_config_filter="source_table = 'providers'"
+  --params config_table="sandeep_manocha.caresource_audit.global_settings",dry_run="false",source_catalog="sandeep_manocha",source_schema="source_data_samples",table_config_filter="source_table = 'providers'"
 ```
 
 ### 2f. Check audit — status
@@ -184,7 +184,7 @@ ORDER BY created_at DESC LIMIT 1
 ```bash
 databricks experimental aitools tools query \
   "SELECT YEAR(effective_date) AS yr, COUNT(*) AS cnt
-   FROM sandeep_manocha.caresource_data_samples.providers
+   FROM sandeep_manocha.source_data_samples.providers
    WHERE YEAR(effective_date) = 2020" \
   --profile DEFAULT
 ```
@@ -206,7 +206,7 @@ WHERE table_name LIKE '%providers%'
 
 ```bash
 databricks fs rm -r \
-  dbfs:/Volumes/sandeep_manocha/caresource_archive/caresource_archive_vol/caresource_data_samples/providers \
+  dbfs:/Volumes/sandeep_manocha/caresource_archive/caresource_archive_vol/source_data_samples/providers \
   --profile DEFAULT
 ```
 
@@ -218,7 +218,7 @@ SET delete_after_archive = false,
     modified_by = 'manual',
     modified_at = current_timestamp(),
     change_reason = 'Reset after test 20'
-WHERE table_id = 'sandeep_manocha.caresource_data_samples.providers'
+WHERE table_id = 'sandeep_manocha.source_data_samples.providers'
 ```
 
 ### 3d. Verify clean state

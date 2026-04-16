@@ -19,7 +19,7 @@
 > 8. **Pre-flight check.** Before running, verify the environment state and report findings. If cleanup is needed, **tell the user what and why** — do not clean up without approval. Check:
 >    - **Source tables:** `claims`, `members`, `providers` have data (row counts per year).
 >    - **Audit log:** Any existing `DRY_RUN` entries (harmless but note them). Any `ARCHIVED` entries for these tables (means prior live runs happened — won't block a dry run but will cause SKIP actions instead of CREATE).
->    - **Archive volume:** Whether folders exist under `.../caresource_data_samples/{claims,members,providers}/` — existing folders + ARCHIVED audit entries = SKIPs; existing folders + no audit entries = orphan folder ERRORs.
+>    - **Archive volume:** Whether folders exist under `.../source_data_samples/{claims,members,providers}/` — existing folders + ARCHIVED audit entries = SKIPs; existing folders + no audit entries = orphan folder ERRORs.
 >    - **table_configs:** All three tables are `is_active = true` with valid `watermark_column` set.
 
 ---
@@ -40,7 +40,7 @@ Note the row count.
 
 ```bash
 databricks bundle run caresource_archive_run -t dev --profile DEFAULT \
-  --params config_table="sandeep_manocha.caresource_audit.global_settings",dry_run="true",source_catalog="sandeep_manocha",source_schema="caresource_data_samples"
+  --params config_table="sandeep_manocha.caresource_audit.global_settings",dry_run="true",source_catalog="sandeep_manocha",source_schema="source_data_samples"
 ```
 
 ### 2. Check audit log for DRY_RUN entries
@@ -64,9 +64,9 @@ databricks experimental aitools tools query \
 
 ```bash
 databricks experimental aitools tools query \
-  "SELECT 'claims' AS tbl, COUNT(*) AS cnt FROM sandeep_manocha.caresource_data_samples.claims
-   UNION ALL SELECT 'members', COUNT(*) FROM sandeep_manocha.caresource_data_samples.members
-   UNION ALL SELECT 'providers', COUNT(*) FROM sandeep_manocha.caresource_data_samples.providers" \
+  "SELECT 'claims' AS tbl, COUNT(*) AS cnt FROM sandeep_manocha.source_data_samples.claims
+   UNION ALL SELECT 'members', COUNT(*) FROM sandeep_manocha.source_data_samples.members
+   UNION ALL SELECT 'providers', COUNT(*) FROM sandeep_manocha.source_data_samples.providers" \
   --profile DEFAULT
 ```
 

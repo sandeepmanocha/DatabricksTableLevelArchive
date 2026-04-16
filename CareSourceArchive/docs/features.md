@@ -177,11 +177,15 @@ F13 (exceptions)  ─┬── F1 (utils) ──┬── F3 (config) ── F4 
 |------|------------|
 | F7.1 | `RehydrationEngine.__init__(self, ctx: RunContext, audit: AuditLogger, spark)` — store ctx, audit, and spark |
 | F7.2 | `.run(params)` → orchestrate full rehydration from runtime params |
-| F7.3 | Create external table: try LOCATION, fallback SHALLOW CLONE |
-| F7.4 | Create unified view: UNION ALL of source table + external year tables |
-| F7.5 | Verify archive folder exists before creating external table |
+| F7.3 | Create external table using `USING DELTA LOCATION` only — no `SHALLOW CLONE` fallback. LOCATION failure raises `ArchiveOperationError` with table, year, operation, and root cause |
+| F7.4 | Create unified view: `UNION ALL` of source table + external year tables (optional, controlled by `create_unified_view` param). View creation failure raises typed `ArchiveOperationError` with the failing SQL |
+| F7.5 | Verify archive folder exists before creating external table — notebooks resolve `available_archive_years` via `dbutils` and pass the list to the engine. `RehydrationEngine` never uses `dbutils` directly |
+| F7.6 | Runtime `table_prefix` parameter — prefixes external table and view names for namespace isolation |
+| F7.7 | Explicit validation of all required `run()` params at entry — missing params raise `ArchiveOperationError(reason="invalid_params")` with actionable message listing missing keys |
+| F7.8 | Audit write failure resilience — if `log_rehydrate` fails, emit structured JSON fallback payload to `LOGGER.error` preserving both primary and audit errors, then raise `ArchiveOperationError` |
+| F7.9 | Status contract: `COMPLETED` (all years restored), `PARTIAL_COMPLETED` (some years skipped), `FAILED` (no years restored or hard error). Enforced via `ALLOWED_REHYDRATION_STATUSES` frozenset in `audit.py` |
 
-**Acceptance:** RHY-01 – RHY-06, ROLL-01
+**Acceptance:** RHY-01 – RHY-06, ROLL-01, AUD-08
 
 ---
 

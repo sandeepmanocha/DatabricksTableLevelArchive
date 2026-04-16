@@ -46,7 +46,6 @@ from src.config import load_settings, load_table_configs
 from src.utils import (
     RunContext,
     generate_archive_run_id,
-    load_secrets,
 )
 
 # COMMAND ----------
@@ -59,10 +58,8 @@ if not config_table:
 # COMMAND ----------
 settings = load_settings(spark, config_table)
 table_configs = load_table_configs(spark, settings["table_configs_table"])
-secrets = load_secrets(settings, dbutils)
 ctx = RunContext(
     settings=settings,
-    secrets=secrets,
     job_context=_job_context,
     archive_run_id=generate_archive_run_id(),
 )

@@ -60,7 +60,6 @@ def _valid_settings_row(**overrides):
         "audit_schema": "asch",
         "default_retention_years": 7,
         "archive_base_path_prefix": "abfss://x",
-        "secret_scope": "scope",
         "schema_templates_table": "c.cfg.tmpl",
         "table_configs_table": "c.cfg.tables",
     }
@@ -210,7 +209,6 @@ class TestLoadSettings:
             "audit_schema",
             "default_retention_years",
             "archive_base_path_prefix",
-            "secret_scope",
             "schema_templates_table",
             "table_configs_table",
         ):

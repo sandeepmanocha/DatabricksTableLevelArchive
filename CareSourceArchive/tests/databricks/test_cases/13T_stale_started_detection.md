@@ -31,7 +31,7 @@ Verify claims year 2020 has no dangling STARTED entries from prior test runs.
 ```sql
 SELECT status, archive_run_id, created_at
 FROM sandeep_manocha.caresource_audit.archive_audit_log
-WHERE table_name = 'sandeep_manocha.caresource_data_samples.claims'
+WHERE table_name = 'sandeep_manocha.source_data_samples.claims'
   AND year = 2020
 ORDER BY created_at DESC LIMIT 5
 ```
@@ -50,7 +50,7 @@ A STARTED entry older than `stale_started_threshold_hours` (default 4h) is treat
 INSERT INTO sandeep_manocha.caresource_audit.archive_audit_log
   (audit_id, archive_run_id, table_name, year, status, record_count, created_at, archived_by)
 VALUES
-  (uuid(), 'fake-stale-run-00000', 'sandeep_manocha.caresource_data_samples.claims', 2020, 'STARTED', 0,
+  (uuid(), 'fake-stale-run-00000', 'sandeep_manocha.source_data_samples.claims', 2020, 'STARTED', 0,
    current_timestamp() - INTERVAL 24 HOURS, current_user())
 ```
 
@@ -60,7 +60,7 @@ This simulates a run that started 24 hours ago and never completed (well above t
 
 ```bash
 databricks bundle run caresource_archive_run -t dev --profile DEFAULT \
-  --params config_table="sandeep_manocha.caresource_audit.global_settings",dry_run="false",source_catalog="sandeep_manocha",source_schema="caresource_data_samples",table_config_filter="source_table = 'claims'"
+  --params config_table="sandeep_manocha.caresource_audit.global_settings",dry_run="false",source_catalog="sandeep_manocha",source_schema="source_data_samples",table_config_filter="source_table = 'claims'"
 ```
 
 ### 2c. Check audit log
@@ -98,7 +98,7 @@ A STARTED entry younger than the stale threshold is treated as an active concurr
 INSERT INTO sandeep_manocha.caresource_audit.archive_audit_log
   (audit_id, archive_run_id, table_name, year, status, record_count, created_at, archived_by)
 VALUES
-  (uuid(), 'fake-concurrent-run-00000', 'sandeep_manocha.caresource_data_samples.claims', 2020, 'STARTED', 0,
+  (uuid(), 'fake-concurrent-run-00000', 'sandeep_manocha.source_data_samples.claims', 2020, 'STARTED', 0,
    current_timestamp() - INTERVAL 1 MINUTE, current_user())
 ```
 

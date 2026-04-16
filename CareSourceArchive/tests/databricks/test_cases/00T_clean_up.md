@@ -73,7 +73,7 @@ Remove all archive Delta folders under the volume path. The volume itself is pre
 
 ```bash
 databricks fs rm \
-  dbfs:/Volumes/sandeep_manocha/caresource_archive/caresource_archive_vol/caresource_data_samples \
+  dbfs:/Volumes/sandeep_manocha/caresource_archive/caresource_archive_vol/source_data_samples \
   --recursive --profile DEFAULT
 ```
 
@@ -87,7 +87,7 @@ databricks experimental aitools tools query \
   --profile DEFAULT
 ```
 
-**Expect:** Empty results (sample data tables in `caresource_data_samples` are intentionally kept).
+**Expect:** Empty results (sample data tables in `source_data_samples` are intentionally kept).
 
 ### Archive files removed
 
@@ -97,12 +97,12 @@ databricks fs ls \
   --profile DEFAULT
 ```
 
-**Expect:** No `caresource_data_samples` directory listed. The volume root may still show other unrelated files or be empty.
+**Expect:** No `source_data_samples` directory listed. The volume root may still show other unrelated files or be empty.
 
 ---
 
 ## Notes
 
-- This does **not** drop the catalog (`sandeep_manocha`), schemas (`caresource_audit`, `caresource_data_samples`, `caresource_archive`), or the volume (`caresource_archive_vol`).
+- This does **not** drop the catalog (`sandeep_manocha`), schemas (`caresource_audit`, `source_data_samples`, `caresource_archive`), or the volume (`caresource_archive_vol`).
 - Sample data tables (`claims`, `members`, `providers`) are **kept** so you can skip step 4 of `01_setup_and_deploy` on subsequent runs.
 - Run `01_setup_and_deploy` after this to rebuild audit tables and config from scratch.

@@ -1,5 +1,9 @@
 # ── Dot-folders (IDE, tool config, local state) ──
-.*/ 
+.*/
+.cursor/
+
+# ── Documentation (generated / local-only) ──
+docs/
 
 # ── Python ──
 __pycache__/

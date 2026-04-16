@@ -5,7 +5,7 @@
 **Branch:** `feat/delta_config_build_v2_reruns`
 **Workspace:** e2-demo-field-eng (DEFAULT profile)
 **Config table:** `sandeep_manocha.caresource_audit.global_settings`
-**Source:** `sandeep_manocha.caresource_data_samples`
+**Source:** `sandeep_manocha.source_data_samples`
 
 ---
 

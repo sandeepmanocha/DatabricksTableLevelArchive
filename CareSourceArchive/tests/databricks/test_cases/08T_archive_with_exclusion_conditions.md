@@ -43,7 +43,7 @@ SET exclusion_conditions = ARRAY(NAMED_STRUCT(
     modified_by = 'manual',
     modified_at = current_timestamp(),
     change_reason = 'Test: exclude Active claims from archiving'
-WHERE table_id = 'sandeep_manocha.caresource_data_samples.claims'
+WHERE table_id = 'sandeep_manocha.source_data_samples.claims'
 ```
 
 This excludes rows where `status_flag = 'Active'` from archiving.
@@ -53,7 +53,7 @@ Note how many Active claims exist per year:
 ```bash
 databricks experimental aitools tools query \
   "SELECT YEAR(event_date) AS yr, status_flag, COUNT(*) AS cnt
-   FROM sandeep_manocha.caresource_data_samples.claims
+   FROM sandeep_manocha.source_data_samples.claims
    WHERE YEAR(event_date) <= YEAR(current_date()) - 7
    GROUP BY 1, 2 ORDER BY 1, 2" \
   --profile DEFAULT
@@ -65,7 +65,7 @@ databricks experimental aitools tools query \
 
 ```bash
 databricks bundle run caresource_archive_run -t dev --profile DEFAULT \
-  --params config_table="sandeep_manocha.caresource_audit.global_settings",dry_run="true",source_catalog="sandeep_manocha",source_schema="caresource_data_samples"
+  --params config_table="sandeep_manocha.caresource_audit.global_settings",dry_run="true",source_catalog="sandeep_manocha",source_schema="source_data_samples"
 ```
 
 ### 2. Check dry run audit
@@ -94,7 +94,7 @@ SET exclusion_conditions = NULL,
     modified_by = 'manual',
     modified_at = current_timestamp(),
     change_reason = 'Remove test exclusion'
-WHERE table_id = 'sandeep_manocha.caresource_data_samples.claims'
+WHERE table_id = 'sandeep_manocha.source_data_samples.claims'
 ```
 
 > The cleanup UPDATE works as-is because setting to `NULL` doesn't require struct syntax.

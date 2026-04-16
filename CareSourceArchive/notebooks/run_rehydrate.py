@@ -43,8 +43,8 @@ import html
 from src.config import load_settings
 from src.utils import (
     RunContext,
+    archive_folder_exists,
     generate_archive_run_id,
-    load_secrets,
     configure_logging,
 )
 from src.audit import AuditLogger
@@ -83,16 +83,20 @@ for label, val in (
         raise ValueError(f"Widget {label!r} is required (non-empty).")
 
 years = [int(y.strip()) for y in years_raw.split(",") if y.strip()]
+base_name = source_table.split(".")[-1].strip()
+available_archive_years = [
+    y
+    for y in years
+    if archive_folder_exists(dbutils, archive_base_path, base_name, y)
+]
 
 # COMMAND ----------
 archive_run_id = generate_archive_run_id()
 configure_logging(archive_run_id)
 
 settings = load_settings(spark, config_table)
-secrets = load_secrets(settings, dbutils)
 ctx = RunContext(
     settings=settings,
-    secrets=secrets,
     job_context=_job_context,
     archive_run_id=archive_run_id,
 )
@@ -106,7 +110,7 @@ params = {
     "target_catalog": target_catalog,
     "target_schema": target_schema,
     "years": years,
-    "dbutils": dbutils,
+    "available_archive_years": available_archive_years,
 }
 
 # COMMAND ----------
@@ -119,7 +123,7 @@ except ArchiveOperationError as exc:
     )
     raise
 
-view_safe = html.escape(result["view_name"])
+view_safe = html.escape(result["view_name"]) if result["view_name"] else "(no unified view)"
 displayHTML(
     "<h3>Rehydration summary (LOG-04)</h3>"
     "<table border='1' cellpadding='6' cellspacing='0' style='border-collapse:collapse'>"

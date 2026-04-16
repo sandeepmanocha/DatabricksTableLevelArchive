@@ -3,13 +3,12 @@ import logging
 import uuid
 from dataclasses import dataclass
 
-from src.exceptions import ArchiveConfigError
+from src.exceptions import ArchiveConfigError, ArchiveError
 
 
 @dataclass
 class RunContext:
     settings: dict
-    secrets: dict
     job_context: dict
     archive_run_id: str
 
@@ -35,8 +34,10 @@ def archive_folder_exists(dbutils, base_path, table_name, year):
     try:
         dbutils.fs.ls(path)
         return True
-    except Exception:
-        return False
+    except Exception as exc:
+        if ArchiveError.is_not_found(exc):
+            return False
+        raise
 
 
 def row_value(row, field, default=None):
@@ -94,21 +95,6 @@ def configure_logging(archive_run_id):
     handler.addFilter(ArchiveRunFilter())
     root.addHandler(handler)
 
-
-_KNOWN_SECRET_KEYS = ("warehouse_id", "client_id", "client_secret")
-
-
-def load_secrets(settings, dbutils):
-    if "secret_scope" not in settings:
-        raise ArchiveConfigError(field="secret_scope")
-    scope = settings["secret_scope"]
-    out = {}
-    for key in _KNOWN_SECRET_KEYS:
-        try:
-            out[key] = dbutils.secrets.get(scope, key)
-        except Exception:
-            out[key] = None
-    return out
 
 
 def sql_quote(s: str) -> str:

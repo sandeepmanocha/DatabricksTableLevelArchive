@@ -1,15 +1,19 @@
 # CareSource Archive — generate test data (claims, members, providers).
 # Dev-only: populates source tables for interactive end-to-end testing.
+# Compute-neutral: cluster or serverless is determined per-target in databricks.yml.
 
 resources:
   jobs:
     generate_test_data:
       name: caresource-archive-generate-test-data
+      permissions:
+        - user_name: ${var.job_manage_user}
+          level: CAN_MANAGE
       parameters:
         - name: catalog
-          default: "sandeep_manocha"
+          default: "dev2_archive"
         - name: schema
-          default: "caresource_data_samples"
+          default: "source_data_samples"
       tasks:
         - task_key: generate_data
           notebook_task:
