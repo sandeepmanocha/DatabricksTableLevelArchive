@@ -5,9 +5,8 @@ resources:
   jobs:
     caresource_archive_run:
       name: caresource-archive-run
-      permissions:
-        - user_name: ${var.job_manage_user}
-          level: CAN_MANAGE
+      run_as:
+        service_principal_name: ${var.job_run_as_service_principal}
       parameters:
         - name: config_table
           default: ""
@@ -41,33 +40,3 @@ resources:
                 notebook_path: ../notebooks/run_archive.py
                 base_parameters:
                   foreach_payload: "{{input}}"
-
-    caresource_rehydrate:
-      name: caresource-archive-rehydrate
-      permissions:
-        - user_name: ${var.job_manage_user}
-          level: CAN_MANAGE
-      parameters:
-        - name: config_table
-          default: ""
-        - name: archive_base_path
-          default: ""
-        - name: source_table
-          default: ""
-        - name: target_catalog
-          default: ""
-        - name: target_schema
-          default: ""
-        - name: years
-          default: ""
-      tasks:
-        - task_key: run_rehydrate
-          notebook_task:
-            notebook_path: ../notebooks/run_rehydrate.py
-            base_parameters:
-              config_table: "{{job.parameters.config_table}}"
-              archive_base_path: "{{job.parameters.archive_base_path}}"
-              source_table: "{{job.parameters.source_table}}"
-              target_catalog: "{{job.parameters.target_catalog}}"
-              target_schema: "{{job.parameters.target_schema}}"
-              years: "{{job.parameters.years}}"

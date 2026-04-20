@@ -1,0 +1,56 @@
+digraph architecture_overview {
+    rankdir=TB;
+    graph [
+        fontname="Helvetica"
+        fontsize=10
+        bgcolor="#ffffff"
+        fontcolor=black
+        pad=0.08
+        nodesep=0.55
+        ranksep=0.65
+    ];
+    node [
+        fontname="Helvetica"
+        fontsize=9
+        shape=box
+        /* Rounded rects often clip labels vs. text bbox in Graphviz; plain filled boxes are reliable */
+        style=filled
+        fontcolor=black
+        color="#6f6f6f"
+        margin="0.55,0.32"
+        /* Minimum width (inches) so multi-line labels are not squeezed */
+        width=2.05
+    ];
+    edge [fontname="Helvetica", fontsize=8, fontcolor=black, color="#555555"];
+
+    /* Config / Delta tables */
+    GS [fillcolor="#E2E7ED", label="Global Settings\n(Delta table — 1 row)\nbootstrap entry point"];
+    ST [fillcolor="#E2E7ED", label="Schema Templates\n(Delta table)\n1 row per schema"];
+    TC [fillcolor="#E2E7ED", label="Table Configs\n(Delta table)\n1 row per table"];
+    STAGING [fillcolor="#E2E7ED", label="Staging Table\n(Delta table)\nscanner output"];
+    SCANLOG [fillcolor="#E2E7ED", label="Scanner Log\n(Delta table)\nper-table detail"];
+
+    SCANNER [fillcolor="#E0E8E4", label="Schema Scanner\nAuto-discover tables\n+ size check + ambiguity detection"];
+    MERGE [fillcolor="#DDE6E3", label="MERGE into\nTable Configs"];
+
+    ENGINE [fillcolor="#D4DED6", label="Archive Engine"];
+    REHYDRATE [fillcolor="#D4DED6", label="Rehydration Engine"];
+
+    ARCHIVE [fillcolor="#E4DFD6", label="External Volume\n/Volumes/.../year_2020/ ..."];
+    TARGET [fillcolor="#E0E2EA", label="Target Catalog.Schema\nExternal Tables + Unified View"];
+    AUDIT [fillcolor="#E6E3DF", label="Audit Log"];
+
+    GS -> ST;
+    GS -> TC;
+    ST -> SCANNER;
+    SCANNER -> STAGING;
+    SCANNER -> SCANLOG;
+    STAGING -> MERGE;
+    GS -> ENGINE;
+    TC -> ENGINE;
+    ENGINE -> ARCHIVE;
+    ARCHIVE -> REHYDRATE;
+    REHYDRATE -> TARGET;
+    ENGINE -> AUDIT;
+    REHYDRATE -> AUDIT;
+}

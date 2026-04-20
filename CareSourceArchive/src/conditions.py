@@ -1,6 +1,20 @@
 from src.exceptions import ArchiveConfigError
 
 
+def normalize_condition(item) -> dict:
+    """Convert a Spark Row, dict, or similar condition to a plain dict with canonical keys."""
+    if hasattr(item, "asDict"):
+        d = item.asDict()
+    elif isinstance(item, dict):
+        d = dict(item)
+    else:
+        d = dict(item)
+    if "scope" in d and "type" not in d:
+        d["type"] = d.pop("scope")
+    d.pop("sql", None)
+    return d
+
+
 def _substitute_custom_sql(value, source_catalog, source_schema, source_alias):
     s = "" if value is None else str(value)
     return (

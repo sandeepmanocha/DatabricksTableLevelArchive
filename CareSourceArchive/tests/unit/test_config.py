@@ -427,6 +427,30 @@ class TestMergeSettings:
         m = config.merge_settings(g, t)
         assert m["retention_years"] == 3
 
+    def test_inherits_timezone_from_global(self):
+        from src import config
+
+        g = {"default_retention_years": 7, "timezone": "US/Eastern"}
+        t = {"table_id": "x"}
+        m = config.merge_settings(g, t)
+        assert m["timezone"] == "US/Eastern"
+
+    def test_table_timezone_overrides_global(self):
+        from src import config
+
+        g = {"default_retention_years": 7, "timezone": "US/Eastern"}
+        t = {"table_id": "x", "timezone": "US/Pacific"}
+        m = config.merge_settings(g, t)
+        assert m["timezone"] == "US/Pacific"
+
+    def test_timezone_defaults_to_utc(self):
+        from src import config
+
+        g = {"default_retention_years": 7}
+        t = {"table_id": "x"}
+        m = config.merge_settings(g, t)
+        assert m["timezone"] == "UTC"
+
 
 class TestValidateTableConfigFields:
     def test_missing_source_catalog_raises(self):

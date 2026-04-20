@@ -289,13 +289,12 @@ def validate_archive_path(spark, archive_base_path):
     )
 
 
-def ensure_scanner_log_table(spark, settings):
-    fq = f"{settings['audit_catalog']}.{settings['audit_schema']}.scanner_log"
-    ensure_table_with_setup_message(spark, fq, label="Scanner log table")
-
-
 def _scanner_log_fq(settings):
-    return f"{settings['audit_catalog']}.{settings['audit_schema']}.scanner_log"
+    return build_full_table_name(settings["audit_catalog"], settings["audit_schema"], "scanner_log")
+
+
+def ensure_scanner_log_table(spark, settings):
+    ensure_table_with_setup_message(spark, _scanner_log_fq(settings), label="Scanner log table")
 
 
 def write_scanner_log(spark, settings, scan_run_id, table_results, job_context=None):

@@ -1,0 +1,64 @@
+digraph scanner_flow {
+    rankdir=TB;
+    graph [
+        fontname="Helvetica"
+        fontsize=10
+        bgcolor="#ffffff"
+        fontcolor=black
+    ];
+    node [fontname="Helvetica", fontsize=8, fontcolor=black, color="#6f6f6f"];
+    edge [fontname="Helvetica", fontsize=7, fontcolor=black, color="#555555"];
+
+    START [label="Run Scanner", shape=ellipse, style=filled, fillcolor="#D2D9D5", fontcolor=black];
+    SCHID [label="schema_id\nprovided?", shape=diamond, style=filled, fillcolor="#CCD4CF", fontcolor=black];
+    LOAD1 [label="Read single active template\nby schema_id", shape=box, style="rounded,filled", fillcolor="#E5E8EC"];
+    LOAD2 [label="Read all active templates\n(is_active = true)", shape=box, style="rounded,filled", fillcolor="#E5E8EC"];
+    ZERO [label="Zero templates?", shape=diamond, style=filled, fillcolor="#CCD4CF", fontcolor=black];
+    EARLYRET [label="Return all-zero summary", shape=ellipse, style=filled, fillcolor="#D2D9D5", fontcolor=black];
+    FOREACH [label="For each schema template row", shape=box, style="rounded,filled", fillcolor="#E5E8EC"];
+    PATHVAL [label="archive_base_path\nis valid UC Volume?", shape=diamond, style=filled, fillcolor="#CCD4CF", fontcolor=black];
+    PATHFAIL [label="ArchiveConfigError", shape=ellipse, style=filled, fillcolor="#D4C8C8", fontcolor=black];
+    SCAN [label="List all tables in schema", shape=box, style="rounded,filled", fillcolor="#E5E8EC"];
+    EXCLUDE [label="Remove tables in\nexclude_tables array", shape=box, style="rounded,filled", fillcolor="#E5E8EC"];
+    MATCH [label="Match columns against\nwatermark_column_patterns\nordered, first match wins", shape=box, style="rounded,filled", fillcolor="#E5E8EC"];
+    AMBIG [label="Single pattern\nmatched multiple\ncolumns?", shape=diamond, style=filled, fillcolor="#CCD4CF", fontcolor=black];
+    AMBFLAG [label="Flag as ambiguous\nis_active = false", shape=box, style="rounded,filled", fillcolor="#E4E1E6"];
+    FOUND [label="Watermark column\nfound?", shape=diamond, style=filled, fillcolor="#CCD4CF", fontcolor=black];
+    FLAG [label="Flag as unmatched\nis_active = false", shape=box, style="rounded,filled", fillcolor="#E4E1E6"];
+    SIZE [label="Get table size via\nDESCRIBE DETAIL", shape=box, style="rounded,filled", fillcolor="#E0E3E7"];
+    SIZECHECK [label="Size >= threshold?", shape=diamond, style=filled, fillcolor="#CCD4CF", fontcolor=black];
+    GEN [label="Generate table config row\nis_active = true", shape=box, style="rounded,filled", fillcolor="#D0DCCF"];
+    SIZEFLAG [label="Flag below threshold\nis_active = false", shape=box, style="rounded,filled", fillcolor="#E4E1E6"];
+    STAGING_INS [label="INSERT into staging\nwith scan_run_id", shape=box, style="rounded,filled", fillcolor="#DDE6DF"];
+    SCANLOG [label="Write per-table rows\nto scanner_log", shape=box, style="rounded,filled", fillcolor="#DDD8D3"];
+    MORESCHEMAS [label="More schemas?", shape=diamond, style=filled, fillcolor="#CCD4CF", fontcolor=black];
+    MERGEOP [label="MERGE staging → table_configs", shape=box, style="rounded,filled", fillcolor="#CED8D0"];
+    DONE [label="Done — return summary", shape=ellipse, style=filled, fillcolor="#D2D9D5", fontcolor=black];
+
+    START -> SCHID;
+    SCHID -> LOAD1 [label="Yes"];
+    SCHID -> LOAD2 [label="No"];
+    LOAD1 -> ZERO;
+    LOAD2 -> ZERO;
+    ZERO -> EARLYRET [label="Yes"];
+    ZERO -> FOREACH [label="No"];
+    FOREACH -> PATHVAL;
+    PATHVAL -> PATHFAIL [label="No"];
+    PATHVAL -> SCAN [label="Yes"];
+    SCAN -> EXCLUDE -> MATCH -> AMBIG;
+    AMBIG -> AMBFLAG [label="Yes"];
+    AMBIG -> FOUND [label="No"];
+    FOUND -> SIZE [label="Yes"];
+    FOUND -> FLAG [label="No"];
+    SIZE -> SIZECHECK;
+    SIZECHECK -> GEN [label="Yes"];
+    SIZECHECK -> SIZEFLAG [label="No"];
+    GEN -> STAGING_INS;
+    FLAG -> STAGING_INS;
+    AMBFLAG -> STAGING_INS;
+    SIZEFLAG -> STAGING_INS;
+    STAGING_INS -> SCANLOG -> MORESCHEMAS;
+    MORESCHEMAS -> FOREACH [label="Yes"];
+    MORESCHEMAS -> MERGEOP [label="No"];
+    MERGEOP -> DONE;
+}

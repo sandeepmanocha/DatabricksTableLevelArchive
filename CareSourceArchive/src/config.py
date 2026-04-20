@@ -2,6 +2,7 @@ import json
 import numbers
 from zoneinfo import ZoneInfo
 
+from src.conditions import normalize_condition
 from src.exceptions import ArchiveConfigError
 from src.utils import row_to_dict, sql_quote
 
@@ -56,20 +57,6 @@ def _require_non_empty_str(d, key, *, table_id=None):
         raise ArchiveConfigError(field=key, table_id=table_id)
 
 
-def _to_condition_dict(item):
-    """Convert a Spark Row, dict, or similar to a plain dict with canonical keys."""
-    if hasattr(item, "asDict"):
-        d = item.asDict()
-    elif isinstance(item, dict):
-        d = dict(item)
-    else:
-        d = dict(item)
-    if "scope" in d and "type" not in d:
-        d["type"] = d.pop("scope")
-    d.pop("sql", None)
-    return d
-
-
 def validate_exclusion_conditions(raw, *, table_id=None):
     if raw is None:
         return
@@ -83,7 +70,7 @@ def validate_exclusion_conditions(raw, *, table_id=None):
                 field="exclusion_conditions", table_id=table_id
             ) from exc
     elif isinstance(raw, list):
-        parsed = [_to_condition_dict(c) for c in raw]
+        parsed = [normalize_condition(c) for c in raw]
     else:
         raise ArchiveConfigError(field="exclusion_conditions", table_id=table_id)
     if not isinstance(parsed, list):
@@ -239,4 +226,6 @@ def merge_settings(global_settings, table_config):
     out = dict(table_config)
     if out.get("retention_years") is None:
         out["retention_years"] = global_settings["default_retention_years"]
+    if out.get("timezone") is None:
+        out["timezone"] = global_settings.get("timezone", "UTC")
     return out

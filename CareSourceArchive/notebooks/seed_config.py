@@ -53,7 +53,7 @@ if gs_count == 0:
           'America/New_York',
           '{CONFIG_CATALOG}.{CONFIG_SCHEMA}.schema_templates',
           '{CONFIG_CATALOG}.{CONFIG_SCHEMA}.table_configs',
-          '/Volumes/{CONFIG_CATALOG}/caresource_archive/caresource_archive_vol',
+          '/Volumes/{CONFIG_CATALOG}/source_data_samples_archive/sample_data_archive_ext_vol',
           current_user(),
           current_timestamp(),
           'Testing: set retention to 0 to make all data eligible'
@@ -93,7 +93,7 @@ if st_count == 0:
           '{SOURCE_SCHEMA}',
           ARRAY('event_date', 'start_time', 'query_date'),
           0,
-          '/Volumes/{CONFIG_CATALOG}/caresource_archive/caresource_archive_vol/{SOURCE_SCHEMA}',
+          '/Volumes/{CONFIG_CATALOG}/source_data_samples_archive/sample_data_archive_ext_vol/{SOURCE_SCHEMA}',
           false,
           CAST(0.0 AS DOUBLE),
           CAST(NULL AS ARRAY<STRING>),

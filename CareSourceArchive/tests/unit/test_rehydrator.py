@@ -86,43 +86,41 @@ def test_failed_when_no_year_restored(rehydration_engine):
     assert kwargs["error_message"] is not None
 
 
-def test_location_create_failure_raises_typed_error_without_clone(rehydration_engine):
+def test_view_create_failure_raises_typed_error(rehydration_engine):
     eng, audit, spark = rehydration_engine
     loc_path = "abfss://c@acct.dfs.core.windows.net/archive/root/claims/year_2020"
 
     def side_effect(sql):
-        if "USING DELTA LOCATION" in sql and loc_path in sql:
-            raise RuntimeError("location bind failed")
+        if "SELECT * FROM delta." in sql and loc_path in sql:
+            raise RuntimeError("view create failed")
         return MagicMock()
 
     spark.sql.side_effect = side_effect
     with pytest.raises(ArchiveOperationError) as exc:
         eng.run(_params(years=[2020], available_archive_years=[2020]))
     sqls = [c[0][0] for c in spark.sql.call_args_list]
-    assert any("USING DELTA LOCATION" in sql for sql in sqls)
-    assert not any("SHALLOW CLONE" in sql for sql in sqls)
+    assert any("SELECT * FROM delta." in sql for sql in sqls)
     assert exc.value.table == "live_cat.live_sch.claims"
     assert exc.value.year == 2020
-    assert exc.value.operation == "create_external_table"
-    assert "location bind failed" in str(exc.value)
+    assert exc.value.operation == "create_archive_view"
+    assert "view create failed" in str(exc.value)
     kwargs = audit.log_rehydrate.call_args.kwargs
     assert kwargs["status"] == "FAILED"
     assert kwargs["tables_created"] == 0
     assert kwargs["error_message"] is not None
 
 
-def test_runtime_table_prefix_applies_to_external_tables_and_view(rehydration_engine):
+def test_runtime_table_prefix_applies_to_views(rehydration_engine):
     eng, _audit, spark = rehydration_engine
     result = eng.run(
         _params(years=[2020], available_archive_years=[2020], table_prefix="rhy_")
     )
     sqls = [c[0][0] for c in spark.sql.call_args_list]
     assert any("tgt_cat.tgt_sch.rhy_claims_year_2020" in sql for sql in sqls)
-    view_sql = next(sql for sql in sqls if sql.startswith("CREATE OR REPLACE VIEW"))
-    assert "CREATE OR REPLACE VIEW tgt_cat.tgt_sch.rhy_claims_unified" in view_sql
-    assert "SELECT * FROM live_cat.live_sch.claims" in view_sql
-    assert "UNION ALL" in view_sql
-    assert "SELECT * FROM tgt_cat.tgt_sch.rhy_claims_year_2020" in view_sql
+    unified_sql = next(sql for sql in sqls if "unified" in sql)
+    assert "CREATE OR REPLACE VIEW tgt_cat.tgt_sch.rhy_claims_unified" in unified_sql
+    assert "SELECT * FROM live_cat.live_sch.claims" not in unified_sql
+    assert "SELECT * FROM tgt_cat.tgt_sch.rhy_claims_year_2020" in unified_sql
     assert result["view_name"] == "tgt_cat.tgt_sch.rhy_claims_unified"
 
 
@@ -136,7 +134,7 @@ def test_runtime_can_disable_unified_view_creation(rehydration_engine):
         )
     )
     sqls = [c[0][0] for c in spark.sql.call_args_list]
-    assert not any("CREATE OR REPLACE VIEW" in sql for sql in sqls)
+    assert not any("unified" in sql for sql in sqls)
     assert result["view_name"] is None
 
 
@@ -144,7 +142,7 @@ def test_audit_write_failure_logs_fallback_and_preserves_context(rehydration_eng
     eng, audit, spark = rehydration_engine
 
     def sql_boom(sql):
-        if "CREATE OR REPLACE VIEW" in sql:
+        if "unified" in sql:
             raise RuntimeError("view failed")
         return MagicMock()
 
@@ -188,11 +186,11 @@ def test_missing_required_param_fails_with_actionable_error(rehydration_engine, 
     assert kwargs["status"] == "FAILED"
 
 
-def test_view_creation_failure_raises_typed_error(rehydration_engine):
+def test_unified_view_creation_failure_raises_typed_error(rehydration_engine):
     eng, audit, spark = rehydration_engine
 
     def side_effect(sql):
-        if "CREATE OR REPLACE VIEW" in sql:
+        if "unified" in sql:
             raise RuntimeError("view grant denied")
         return MagicMock()
 
@@ -215,3 +213,27 @@ def test_empty_years_list_raises_no_years_restored(rehydration_engine):
     kwargs = audit.log_rehydrate.call_args.kwargs
     assert kwargs["status"] == "FAILED"
     assert kwargs["tables_created"] == 0
+
+
+def test_include_live_data_adds_source_to_unified_view(rehydration_engine):
+    eng, _audit, spark = rehydration_engine
+    result = eng.run(
+        _params(years=[2020, 2021], available_archive_years=[2020, 2021], include_live_data=True)
+    )
+    sqls = [c[0][0] for c in spark.sql.call_args_list]
+    unified_sql = next(sql for sql in sqls if "unified" in sql)
+    assert "SELECT * FROM live_cat.live_sch.claims" in unified_sql
+    assert "SELECT * FROM tgt_cat.tgt_sch.claims_year_2020" in unified_sql
+    assert "SELECT * FROM tgt_cat.tgt_sch.claims_year_2021" in unified_sql
+    assert "UNION ALL" in unified_sql
+    assert result["view_name"] == "tgt_cat.tgt_sch.claims_unified"
+
+
+def test_default_unified_view_excludes_live_data(rehydration_engine):
+    eng, _audit, spark = rehydration_engine
+    result = eng.run(_params(years=[2020], available_archive_years=[2020]))
+    sqls = [c[0][0] for c in spark.sql.call_args_list]
+    unified_sql = next(sql for sql in sqls if "unified" in sql)
+    assert "SELECT * FROM live_cat.live_sch.claims" not in unified_sql
+    assert "SELECT * FROM tgt_cat.tgt_sch.claims_year_2020" in unified_sql
+    assert result["view_name"] == "tgt_cat.tgt_sch.claims_unified"

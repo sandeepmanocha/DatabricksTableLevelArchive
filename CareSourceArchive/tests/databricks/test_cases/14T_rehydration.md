@@ -38,7 +38,12 @@ CREATE SCHEMA IF NOT EXISTS sandeep_manocha.caresource_rehydrated
 
 ```bash
 databricks bundle run caresource_rehydrate -t dev --profile DEFAULT \
-  --params config_table="sandeep_manocha.caresource_audit.global_settings",archive_base_path="/Volumes/sandeep_manocha/caresource_archive/caresource_archive_vol/source_data_samples",source_table="sandeep_manocha.source_data_samples.claims",target_catalog="sandeep_manocha",target_schema="caresource_rehydrated",years="2020,2021"
+  --params config_table=sandeep_manocha.caresource_audit.global_settings \
+  --params archive_base_path=/Volumes/sandeep_manocha/caresource_archive/caresource_archive_vol/source_data_samples \
+  --params source_table=sandeep_manocha.source_data_samples.claims \
+  --params target_catalog=sandeep_manocha \
+  --params target_schema=caresource_rehydrated \
+  --params 'years="2020,2021"'
 ```
 
 ### 2. Verify tables created

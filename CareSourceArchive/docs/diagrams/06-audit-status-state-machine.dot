@@ -1,0 +1,45 @@
+digraph audit_status_state_machine {
+    rankdir=LR;
+    graph [
+        fontname="Helvetica"
+        fontsize=10
+        bgcolor="#ffffff"
+        fontcolor=black
+    ];
+    node [
+        fontname="Helvetica"
+        fontsize=8
+        shape=box
+        style="rounded,filled"
+        fontcolor=black
+        color="#6f6f6f"
+    ];
+    edge [fontname="Helvetica", fontsize=7, fontcolor=black, color="#555555"];
+
+    start [label="", shape=point, width=0.15, fillcolor="#ffffff"];
+
+    STARTED [fillcolor="#D0D8DA", label="STARTED"];
+    DRY_RUN [fillcolor="#E2E5E8", label="DRY_RUN"];
+    NO_DATA [fillcolor="#E4E2E6", label="NO_DATA"];
+    SKIPPED [fillcolor="#E0DEE3", label="SKIPPED"];
+    SKIPPED_CONCURRENT [fillcolor="#DDD5D5", label="SKIPPED_CONCURRENT"];
+    ARCHIVED [fillcolor="#C8D4CA", label="ARCHIVED"];
+    FAILED [fillcolor="#D0C4C4", label="FAILED"];
+    ARCHIVED_AND_DELETED [fillcolor="#BFC9BF", label="ARCHIVED_AND_DELETED"];
+
+    start -> STARTED [label="claim table+year"];
+    start -> DRY_RUN [label="dry_run=true"];
+    start -> NO_DATA [label="no records for year"];
+    start -> SKIPPED [label="no new data above watermark"];
+    start -> SKIPPED_CONCURRENT [label="another run owns this"];
+
+    STARTED -> ARCHIVED [label="write or append succeeded"];
+    STARTED -> FAILED [label="write failed"];
+    STARTED -> SKIPPED_CONCURRENT [label="concurrent run detected"];
+
+    ARCHIVED -> ARCHIVED_AND_DELETED [label="delete succeeded"];
+    ARCHIVED -> FAILED [label="delete failed"];
+    ARCHIVED -> ARCHIVED [label="delete_after_archive=false\n(final state)"];
+    ARCHIVED -> ARCHIVED_AND_DELETED [label="resumed on next run"];
+    ARCHIVED -> STARTED [label="next run appends\nnewly-eligible records\n(both modes, watermark-driven)"];
+}

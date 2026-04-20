@@ -5,9 +5,8 @@ resources:
   jobs:
     setup_config_tables:
       name: caresource-archive-setup
-      permissions:
-        - user_name: ${var.job_manage_user}
-          level: CAN_MANAGE
+      run_as:
+        service_principal_name: ${var.job_run_as_service_principal}
       tasks:
         - task_key: create_tables
           notebook_task:

@@ -20,13 +20,12 @@
 | Requirements Summary | Complete | docs/requirements-summary.md |
 | Design | Complete | docs/design.md |
 | Feature List | Complete | docs/features.md |
-| Prompt | Complete | docs/prompt.md |
 | Tracker | Complete | docs/tracker.md |
 | Development Rules | Complete | docs/development-rules.md |
 | Prerequisites | Complete | docs/prerequisites.md |
 | 12-Week Plan | Complete | docs/12-week-plan.md |
-| Progress Report | In Progress | docs/progress-report.md |
 | Code Dependency Graph | Complete | docs/code-dependency-graph.md |
+| Decisions Log | Complete | docs/decisions.md |
 
 ### Configuration (Delta Tables)
 
@@ -58,7 +57,7 @@
 | src/conditions.py | F4 | Tested | 17/17 passing | Pure functions: SQL generation |
 | src/scanner.py | F11 | Tested | 23/23 passing | Pure functions: UC scan + size check + staging table + MERGE to table_configs |
 | src/archiver.py | F5, F6 | Tested | 33/33 passing | ArchiveEngine class + watermark-driven CREATE/APPEND/SKIP + concurrency + NULL handling |
-| src/rehydrator.py | F7 | Tested | 7/7 passing | RehydrationEngine class |
+| src/rehydrator.py | F7 | Tested | 15/15 passing | RehydrationEngine class — views instead of external tables (D45) |
 
 ### Features
 
@@ -72,7 +71,7 @@
 | Condition SQL builder | F4 | Tested | 17/17 passing | F3 |
 | Dry-run mode | F5 | Tested | 22/22 (in archiver) | F4, F6, F2 |
 | Archive engine + concurrency + NULL handling | F6 | Tested | 22/22 passing | F1, F2, F3, F4 |
-| Rehydration engine (RehydrationEngine) | F7 | Tested | 7/7 passing | F1, F2 |
+| Rehydration engine (RehydrationEngine) | F7 | Tested | 15/15 passing | F1, F2 |
 | Archive notebook + job | F8 | Code Complete | — | F6, F3 |
 | Rehydrate notebook + job | F9 | Code Complete | — | F7 |
 | Test suite | F10 | Tested | 208/209 unit (1 pre-existing scanner failure) | All |
@@ -172,6 +171,7 @@
 | 2026-04-02 | **Schema ID & scanner targeting (D32).** Added `schema_id` as human-readable PK to `schema_templates` (replaces composite `(source_catalog, source_schema)` PK; uniqueness enforced in code). `load_schema_templates` now accepts optional `schema_id` parameter and always filters `is_active = true`. Scanner job accepts optional `schema_id` parameter for single-template targeting. Zero active templates → early return (no staging/merge). Removed dead `dbutils` parameter from `run_scanner`. Uses `sql_quote()` for safe SQL construction. Updated: DDL in `setup_config_tables.py`, `src/config.py`, `src/scanner.py`, `notebooks/run_scanner.py`, `resources/scanner_job*.yml`, tests. Spec: `docs/superpowers/specs/2026-04-02-schema-id-scanner-targeting-design.md`. Updated all docs: requirements.md (CFG-02, SCN-01, D32), requirements-summary.md, features.md (F3.3, F10.1, F10.2, F11.10, F12.1), design.md (schema_templates table, scanner flow), progress-report.md, tracker.md | Brainstorming session |
 | 2026-04-02 | **INSERT SQL consolidation (Rule 23).** Extracted 6 SQL quoting helpers (`sql_quote`, `sql_str_or_null`, `sql_int`, `sql_int_or_null`, `sql_bool`, `sql_expr`) and 2 INSERT builders (`build_insert_values_sql`, `build_multi_insert_values_sql`) into `src/utils.py`. Deleted 6 duplicated private helpers from `audit.py` (4) and `scanner.py` (2). Refactored `log_archive`, `log_rehydrate`, `write_staging`, `write_scanner_log` to use shared builders. Added column constants `ARCHIVE_AUDIT_COLUMNS` / `REHYDRATION_AUDIT_COLUMNS` and `_job_context_values` helper. Mechanical rename of `_sql_quote`/`_sql_str` → shared imports in `check_resume_state`, `check_concurrent`, `merge_staging_to_final`. Added 21 new tests. Total: 186/186 unit tests passing. Added development Rule 23 (DRY SQL statements). Archiver INSERT-SELECT tracked in backlog (Category C). Spec: `docs/superpowers/specs/2026-04-02-insert-sql-consolidation-design.md` | Refactoring session |
 | 2026-04-06 | **Incremental archive runs — watermark-driven rewrite.** Implemented design from `docs/superpowers/specs/2026-04-06-rerun-force-design-DRAFT.md`. Phase 1: Renamed `date_column` → `watermark_column` across codebase. Phase 2: Added `watermark_value`, `source_year_count`, `archive_mode` to audit DDL; added `get_last_run_state()` to audit module. Phase 3: Rewrote `_process_year_live` with watermark CREATE/APPEND/SKIP; removed `year_override`/`replace` mode; added safety checks (missing folder after delete, count drift); `sql_quote()` for watermark values; Delta fallback for missing audit watermark. Phase 4: Removed `year_override` from notebooks + job YAMLs. Updated docs. Total: 208/209 unit tests (1 pre-existing scanner failure). Branch: `feat/delta_config_build_v2_reruns` | Implementation session |
+| 2026-04-16 | **Rehydrator: views instead of external tables (D45).** UC blocks `CREATE TABLE LOCATION` on Volume-governed paths. Replaced `_create_external_table` with `_create_archive_view` using `CREATE OR REPLACE VIEW ... AS SELECT * FROM delta.\`path\``. Per-year views + unified view, zero-copy. Removed `sql_quote` import. Updated 4 tests (SQL pattern matching now distinguishes per-year views from unified view). 15/15 tests passing. Live run succeeded on `fe-sandbox-manocha` dev-serverless for providers (6 years). Spec: `docs/superpowers/specs/2026-04-16-rehydrator-views-design.md` | Implementation session |
 
 ---
 

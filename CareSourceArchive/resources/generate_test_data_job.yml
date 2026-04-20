@@ -6,9 +6,8 @@ resources:
   jobs:
     generate_test_data:
       name: caresource-archive-generate-test-data
-      permissions:
-        - user_name: ${var.job_manage_user}
-          level: CAN_MANAGE
+      run_as:
+        service_principal_name: ${var.job_run_as_service_principal}
       parameters:
         - name: catalog
           default: "dev2_archive"

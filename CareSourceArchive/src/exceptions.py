@@ -49,6 +49,7 @@ class ArchiveError(Exception):
         "No such file or directory",
         "PATH_NOT_FOUND",
         "does not exist",
+        "cannot be found",
     )
 
     @staticmethod

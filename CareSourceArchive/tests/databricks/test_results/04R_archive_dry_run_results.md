@@ -1,354 +1,158 @@
-# 04 — Archive Dry Run — Results
+# 04 — Archive Dry Run Results
 
-## Run — 2026-04-15 16:19 CDT
+---
 
-**TL;DR:** Archive dry run FAILED — all 3 ForEach iterations failed before audit logging. Expected failure: SP `caresource-archive-dev` lacks Volume permissions on `fe-sandbox-manocha`. Source data untouched. Validates that `ArchiveError.is_not_found` refactor properly surfaces permission errors instead of silently swallowing them.
+## Run — 2026-04-20 00:40 CDT
 
-**Branch:** `feat/delta_config_build_v3_code_reduce`
-**Profile:** fe-sandbox-manocha
-**Target:** dev-serverless
+**TL;DR:** Dry run passed (~112s). All 3 active tables (`claims`, `members`, `providers`) produced `DRY_RUN` audit rows for every eligible year (21 rows total), source row counts unchanged, archive volume still empty. Per-year `record_count` sums are ~0.3% below source totals — confirmed as exactly-matching NULL watermark rows (claims=15, members=10, providers=5) that the per-year bucketing excludes.
+
+**Branch:** `feat/delta_config_build_v6_dab`
+**Profile:** `fe-sandbox-manocha`
 **Workspace:** https://fe-sandbox-manocha.cloud.databricks.com
+**Bundle Target:** `dev-serverless`
+**Config table:** `dev2_archive.metadata.global_settings`
+**Audit log:** `dev2_archive.metadata.archive_audit_log`
+**Source:** `dev2_archive.source_data_samples` (`claims`, `members`, `providers`)
+**Archive volume:** `/Volumes/dev2_archive/source_data_samples_archive/sample_data_archive_ext_vol`
+**Run-as SP:** `44edd08d-b71a-4e29-a01b-4881be31a144` (`caresource-archive-dev`)
+**Retention:** `default_retention_years = 0` → all years eligible
 
-### Pre-flight State
+---
 
-| Metric | Value |
-|--------|-------|
-| archive_audit_log rows | 21 |
-| last archive_run_id | de6723ea-63cd-461f-9e3e-a65ec137156d |
-| table_configs active | 3 (claims, members, providers) |
-| Source: claims | 5,000 rows |
-| Source: members | 3,000 rows |
-| Source: providers | 1,000 rows |
+### Pre-flight — **PASS**
 
-All 3 tables active with valid watermark columns (event_date, start_date, effective_date).
+| Check | Result |
+|---|---|
+| `archive_audit_log` rows | 0 (clean, no prior runs) |
+| `table_configs` | 3 rows, all `is_active=true`: `claims/event_date`, `members/start_date`, `providers/effective_date` |
+| Source tables exist | `claims`, `members`, `providers` present in `dev2_archive.source_data_samples` |
+| Source row counts | `claims`=5000 (2018–2025), `members`=3000 (2019–2025), `providers`=1000 (2020–2025) |
+| Archive volume | exists at `/Volumes/.../sample_data_archive_ext_vol`, empty (no folders) |
+| `global_settings` | `audit_catalog=dev2_archive`, `audit_schema=metadata`, `default_retention_years=0`, `dry_run_default=true`, `timezone=America/New_York` |
 
-### Step 1 — Run archive dry run: **FAIL**
+**Privilege note:** before running, the test operator (`sandeep.manocha@databricks.com`) did not have `SELECT` on `dev2_archive.source_data_samples` — only the run-as SP did. Self-granted to capture baseline + Step 3 verification:
+
+```sql
+GRANT SELECT ON SCHEMA dev2_archive.source_data_samples TO `sandeep.manocha@databricks.com`;
+```
+
+(Same gap as the `MODIFY` grant noted in 02R — flagged again under Next Steps.)
+
+---
+
+### Step 1 — Run archive in dry run mode — **PASS**
+
+Command:
 
 ```
 databricks bundle run caresource_archive_run -t dev-serverless --profile fe-sandbox-manocha \
-  --params config_table=dev2_archive.metadata.global_settings,dry_run=true
+  --params config_table="dev2_archive.metadata.global_settings",dry_run="true",source_catalog="dev2_archive",source_schema="source_data_samples"
 ```
 
-- Run URL: https://fe-sandbox-manocha.cloud.databricks.com/?o=7474652022110066#job/917535404414134/run/816531891254881
-- Status: INTERNAL_ERROR FAILED
-- Duration: ~95 seconds
-- `generate_parameters` task: SUCCESS
-- `run_archive` ForEach task: FAILED — all 3 iterations failed
-
-| ForEach Stat | Value |
-|---|---|
-| total_iterations | 3 |
-| succeeded_iterations | 0 |
-| failed_iterations | 3 |
-| error_message | Workload failed, see run output for details |
-| termination_category | RunExecutionError |
-
-The job runs as SP `caresource-archive-dev` (application ID `ac94d080-96a0-4866-a720-3c60ab629326`), which does not have `READ VOLUME` / `WRITE VOLUME` grants on the archive volume. The `generate_parameters` task succeeded (reads table metadata only), but each `run_archive_iteration` failed when attempting to check/write the archive volume path.
-
-### Step 2 — Check audit log: **FAIL**
-
-No new audit entries were written. Count remains 21 (same as before). The failure occurs before the archiver reaches the audit-logging stage — it fails during the `archive_folder_exists` check when the SP gets a `PERMISSION_DENIED` error accessing the Volume.
-
-With the `ArchiveError.is_not_found` refactor (from plan `move_is_not_found_to_archiveerror`), `PERMISSION_DENIED` is correctly **not** classified as a "not found" error. The exception propagates and the task fails visibly — which is the desired behavior. Previously, a bare `except` would have silently returned `False` and the archiver would have continued with incorrect assumptions.
-
-### Step 3 — Verify source data untouched: **PASS**
-
-| Table | Before | After |
-|-------|--------|-------|
-| claims | 5,000 | 5,000 |
-| members | 3,000 | 3,000 |
-| providers | 1,000 | 1,000 |
-
-Source data unchanged. The failure occurred before any data modification.
-
-## What Happened
-
-Deployed the bundle with the `ArchiveError.is_not_found` refactor to `fe-sandbox-manocha` workspace (dev-serverless target). The SP `caresource-archive-dev` exists and is ACTIVE but lacks Volume permissions. The scanner passed (it only reads table metadata). The archive dry run failed all 3 iterations because the SP cannot access the archive volume. The `is_not_found` refactor correctly surfaces the `PERMISSION_DENIED` error instead of silently treating it as "path not found."
-
-## Next Steps
-
-- **Grant Volume permissions** to the SP: `GRANT READ VOLUME, WRITE VOLUME ON VOLUME dev2_archive.<schema>.<volume> TO caresource-archive-dev`
-- After granting permissions, re-run this test (04T) — expect PASS with DRY_RUN audit entries
-- Alternatively, document this as a required setup step in the service-principals runbook
+- Run URL: https://fe-sandbox-manocha.cloud.databricks.com/?o=7474658872313088#job/645665657236546/run/177925025869870
+- Status: `TERMINATED SUCCESS` (all 3 tasks: `generate_parameters`, `run_archive_iteration`, `run_archive`)
+- Duration: ~112 s
+- `archive_run_id`: `55e8ab1e-57a7-47cc-83e2-8780a141723e`
 
 ---
 
-## Run — 2026-04-12 17:33 CDT
+### Step 2 — Audit log `DRY_RUN` entries — **PASS**
 
-**TL;DR:** Dry run succeeded. 16 DRY_RUN entries created across 6 active tables. Source data untouched. Post secret-scope removal code works end-to-end.
+21 rows, all `status = DRY_RUN`, all carrying the same `archive_run_id`. One row per `(table, year)` combination:
 
-**Branch:** `feat/delta_config_build_v3_code_reduce` (post secret-scope removal — commit `04d8fcb`)
-**Profile:** DEFAULT
-**archive_run_id:** `00ef5b28-b036-487a-b020-9d8c0ee3c594`
+| `table_name` | `year` | `record_count` |
+|---|---|---|
+| `dev2_archive.source_data_samples.claims` | 2018 | 623 |
+| `dev2_archive.source_data_samples.claims` | 2019 | 624 |
+| `dev2_archive.source_data_samples.claims` | 2020 | 623 |
+| `dev2_archive.source_data_samples.claims` | 2021 | 623 |
+| `dev2_archive.source_data_samples.claims` | 2022 | 624 |
+| `dev2_archive.source_data_samples.claims` | 2023 | 624 |
+| `dev2_archive.source_data_samples.claims` | 2024 | 622 |
+| `dev2_archive.source_data_samples.claims` | 2025 | 622 |
+| `dev2_archive.source_data_samples.members` | 2019 | 426 |
+| `dev2_archive.source_data_samples.members` | 2020 | 426 |
+| `dev2_archive.source_data_samples.members` | 2021 | 427 |
+| `dev2_archive.source_data_samples.members` | 2022 | 428 |
+| `dev2_archive.source_data_samples.members` | 2023 | 429 |
+| `dev2_archive.source_data_samples.members` | 2024 | 426 |
+| `dev2_archive.source_data_samples.members` | 2025 | 428 |
+| `dev2_archive.source_data_samples.providers` | 2020 | 163 |
+| `dev2_archive.source_data_samples.providers` | 2021 | 168 |
+| `dev2_archive.source_data_samples.providers` | 2022 | 166 |
+| `dev2_archive.source_data_samples.providers` | 2023 | 167 |
+| `dev2_archive.source_data_samples.providers` | 2024 | 166 |
+| `dev2_archive.source_data_samples.providers` | 2025 | 165 |
 
-### Pre-flight Check
+All expected conditions satisfied:
+- `status = DRY_RUN` on every row ✓
+- `record_count > 0` on every eligible year ✓
+- Year ranges match source min/max years from pre-flight ✓
+- No archive folders created under the archive volume ✓
 
-| Check | Result |
-|-------|--------|
-| Source tables have data | claims=5,008, members=3,000, providers=5 |
-| archive_audit_log baseline | 267 entries, last_run `effa5281...` |
-| Prior ARCHIVED entries | claims(9), members(7), providers(6+6 deleted), bronze_table_lineage(1), gold_daily_access_trends(1), silver_query_table_access(8) |
-| Prior DRY_RUN entries | Yes — harmless, from earlier test runs |
-| Prior STARTED entries | Yes — stale from prior runs |
-| table_configs active status | claims ✓ (event_date), providers ✓ (effective_date), members ✗ (inactive) |
-| 7 active tables total | bronze_column_lineage, bronze_query_history, bronze_table_lineage, claims, gold_daily_access_trends, providers, silver_query_table_access |
+**Sum-consistency check — explained by NULL watermark rows:**
 
-### Step 1 — Run archive in dry run mode: **PASS**
+| Table | Σ `record_count` (dry run) | Source `COUNT(*)` | Delta | NULL watermark rows | Match? |
+|---|---|---|---|---|---|
+| `claims` | 4985 | 5000 | -15 | `event_date IS NULL` = 15 | ✓ exact |
+| `members` | 2990 | 3000 | -10 | `start_date IS NULL` = 10 | ✓ exact |
+| `providers` | 995 | 1000 | -5 | `effective_date IS NULL` = 5 | ✓ exact |
 
+Verified via:
+
+```sql
+SELECT 'claims', COUNT(*) FROM dev2_archive.source_data_samples.claims WHERE event_date IS NULL
+UNION ALL SELECT 'members', COUNT(*) FROM dev2_archive.source_data_samples.members WHERE start_date IS NULL
+UNION ALL SELECT 'providers', COUNT(*) FROM dev2_archive.source_data_samples.providers WHERE effective_date IS NULL;
+-- claims=15, members=10, providers=5  (matches deltas exactly)
 ```
-databricks bundle run caresource_archive_run -t dev --profile DEFAULT \
-  --params config_table="sandeep_manocha.caresource_audit.global_settings",dry_run="true",source_catalog="sandeep_manocha",source_schema="caresource_data_samples"
-```
 
-- Run URL: https://e2-demo-field-eng.cloud.databricks.com/?o=1444828305810485#job/197650125146998/run/938731712083512
-- Status: TERMINATED SUCCESS
-- Duration: ~125 seconds
+**Conclusion:** rows with NULL watermark values don't fall into any year bucket and are excluded from both dry-run and (presumably) live archive processing. They will remain in the source table even after a live archive run. This is a property of the archiver's year-grouping logic — worth documenting, and worth explicitly verifying on the live run (05T) that the archived row counts equal these dry-run `record_count` values and the NULL rows remain in source.
 
-### Step 2 — Check audit log for DRY_RUN entries: **PASS**
+---
 
-| table_name | year | status | record_count |
+### Step 3 — Source data untouched — **PASS**
+
+| `tbl` | Count after dry run | Baseline | Delta |
 |---|---|---|---|
-| ...bronze_column_lineage | 2026 | DRY_RUN | 290,984,512 |
-| ...bronze_query_history | 2025 | DRY_RUN | 37,207 |
-| ...bronze_query_history | 2026 | DRY_RUN | 37,761,839 |
-| ...bronze_table_lineage | 2026 | DRY_RUN | 0 |
-| ...claims | 2018 | DRY_RUN | 0 |
-| ...claims | 2019 | DRY_RUN | 0 |
-| ...claims | 2020 | DRY_RUN | 0 |
-| ...claims | 2021 | DRY_RUN | 0 |
-| ...claims | 2022 | DRY_RUN | 0 |
-| ...claims | 2023 | DRY_RUN | 0 |
-| ...claims | 2024 | DRY_RUN | 0 |
-| ...claims | 2025 | DRY_RUN | 0 |
-| ...claims | 2026 | DRY_RUN | 0 |
-| ...gold_daily_access_trends | 2026 | DRY_RUN | 0 |
-| ...silver_query_table_access | 2025 | DRY_RUN | 1,795 |
-| ...silver_query_table_access | 2026 | DRY_RUN | 105,856 |
+| `claims` | 5000 | 5000 | 0 |
+| `members` | 3000 | 3000 | 0 |
+| `providers` | 1000 | 1000 | 0 |
 
-**Observations:**
-- All 16 entries have `status = DRY_RUN` ✓
-- 6 of 7 active tables processed (providers absent — all data already ARCHIVED_AND_DELETED in prior runs)
-- `members` correctly skipped (is_active = false) ✓
-- `claims` shows 0 records for all years — prior live archives removed eligible data
-- Significant eligible data in: bronze_column_lineage (291M), bronze_query_history (37.8M), silver_query_table_access (108K)
+Archive volume re-checked after the run — still empty, no folders created.
 
-### Step 3 — Verify source data untouched: **PASS**
+---
 
-| Table | Before | After |
-|-------|--------|-------|
-| claims | 5,008 | 5,008 |
-| members | 3,000 | 3,000 |
-| providers | 5 | 5 |
+### Final State
 
-Source row counts identical — dry run modified no data. ✓
+| Item | Value |
+|---|---|
+| `archive_audit_log` | 21 rows, all `DRY_RUN`, one `archive_run_id` |
+| Source row counts | Unchanged (5000 / 3000 / 1000) |
+| Archive volume contents | Empty |
+| `table_configs` | Unchanged (3 active rows) |
+
+---
 
 ## What Happened
 
-Archive dry run completed successfully after deploying the secret-scope removal changes. The archiver processed 6 of the 7 active tables in table_configs, creating 16 DRY_RUN audit entries. Providers was skipped because all its data was already archived and deleted in prior test runs. Members was correctly excluded (is_active = false). Claims shows 0 eligible records across all years — prior live archive runs already processed all archivable data. The bronze and silver system tables show substantial eligible record counts. No source data was modified.
+1. Pre-flight verified clean slate: audit log empty, all 3 source tables active with correct watermark columns, source counts matched expectations, archive volume empty.
+2. Needed to self-grant `SELECT` on the source schema to the test operator — same ownership-vs-grant gap observed in 02R for `MODIFY` on the metadata schema.
+3. Launched `caresource_archive_run` with `dry_run=true` via `bundle run`. Multi-task job (`generate_parameters` → `run_archive_iteration` → `run_archive`) completed successfully in ~112s.
+4. Audit log produced exactly 21 `DRY_RUN` rows — one per `(table, year)` combination across claims (8 years 2018–2025), members (7 years 2019–2025), and providers (6 years 2020–2025). All under a single `archive_run_id`.
+5. Source tables untouched (identical counts pre/post), archive volume still empty — dry run correctly did not write anything.
+6. Noticed a small consistency gap: per-year `record_count` totals are ~0.3% below total source counts across all three tables. Confirmed via direct NULL-count queries — the deltas (15/10/5) match the NULL-watermark row counts exactly. The archiver's year-grouping logic excludes rows with NULL watermarks from the per-year DRY_RUN summary.
+
+---
 
 ## Next Steps
 
-- Proceed to 05T (archive live create) if needed
-- Note: bronze_column_lineage has 291M eligible rows — a live archive of this table will take significant time/resources
+1. **Proceed to 05T (archive live create).** Pre-conditions all met; expect archived row counts to equal the dry-run `record_count` values, OR the full source count if NULL watermark rows are included in a `NULL`-year bucket.
+2. **NULL watermark behavior — confirmed, needs a policy decision:** NULL-watermark rows (claims=15, members=10, providers=5) are excluded from dry-run year bucketing. On 05T (live run), verify:
+   - Archived row counts equal the dry-run `record_count` values exactly (4985 / 2990 / 995), and
+   - Source tables retain exactly the NULL-watermark rows (15 / 10 / 5) after archiving.
+   - If this is desired behavior, document it in the archiver docs / runbook. If not desired, open an issue to route NULL-watermark rows into an explicit NULL-year bucket or a dead-letter table.
+3. **`seed_config.py` / setup job should grant `SELECT` on the source schema to the catalog owner**, not only to the run-as SP. Same pattern as the `MODIFY`-on-metadata gap flagged in 02R. Either extend the setup notebook or document in `docs/runbooks/service-principals.md` as a one-time bootstrap grant.
+4. **Parameterize `tests/databricks/test_cases/04T_archive_dry_run.md`** — hard-coded `sandeep_manocha.caresource_audit` / `DEFAULT` / `dev` values are stale (same kind of stale-ness 02T had). Replace with placeholders the runner must fill in.
 
 ---
-
-## Run — 2026-04-10 12:56
-
-**Date:** 2026-04-10
-**Run ID:** `41232e99-4a59-436b-b63b-e51ccdaf8ae2`
-**Job URL:** https://e2-demo-field-eng.cloud.databricks.com/?o=1444828305810485#job/197650125146998/run/512065461168965
-**Status:** PASS
-
----
-
-### Context
-
-Fresh environment — audit log was empty (0 rows) before this run. The scanner had populated `table_configs` but no archives had been created yet. `members` and `providers` are `is_active = false` in `table_configs`, so they are correctly excluded.
-
-Since no prior archives exist, the dry run predicts **CREATE** for every table+year — the same action a live run would take on first execution.
-
----
-
-### Before
-
-| Metric | Value |
-|--------|-------|
-| Audit log rows | 0 |
-| claims count | 5,002 |
-| members count | 3,000 |
-| providers count | 1,005 |
-
-### Dry Run Results
-
-**15 DRY_RUN entries** logged across **6 tables**. All show `action = CREATE`, `would_archive = record_count`.
-
-#### claims (8 years)
-
-| Year | Action | Eligible | Would Archive |
-|------|--------|----------|---------------|
-| 2018 | CREATE | 623 | 623 |
-| 2019 | CREATE | 624 | 624 |
-| 2020 | CREATE | 625 | 625 |
-| 2021 | CREATE | 623 | 623 |
-| 2022 | CREATE | 624 | 624 |
-| 2023 | CREATE | 624 | 624 |
-| 2024 | CREATE | 622 | 622 |
-| 2025 | CREATE | 622 | 622 |
-
-#### bronze_column_lineage (1 year)
-
-| Year | Action | Eligible | Would Archive |
-|------|--------|----------|---------------|
-| 2026 | CREATE | 290,984,512 | 290,984,512 |
-
-#### bronze_query_history (2 years)
-
-| Year | Action | Eligible | Would Archive |
-|------|--------|----------|---------------|
-| 2025 | CREATE | 37,207 | 37,207 |
-| 2026 | CREATE | 37,761,839 | 37,761,839 |
-
-#### bronze_table_lineage (1 year)
-
-| Year | Action | Eligible | Would Archive |
-|------|--------|----------|---------------|
-| 2026 | CREATE | 30,010,157 | 30,010,157 |
-
-#### gold_daily_access_trends (1 year)
-
-| Year | Action | Eligible | Would Archive |
-|------|--------|----------|---------------|
-| 2026 | CREATE | 60,709 | 60,709 |
-
-#### silver_query_table_access (2 years)
-
-| Year | Action | Eligible | Would Archive |
-|------|--------|----------|---------------|
-| 2025 | CREATE | 1,795 | 1,795 |
-| 2026 | CREATE | 8,304,946 | 8,304,946 |
-
-#### Not included
-
-- **members** — `is_active = false` in `table_configs`
-- **providers** — `is_active = false` in `table_configs`
-- Various gold tables (`gold_column_usage`, `gold_consumer_summary`, etc.) — `is_active = false`
-
-### After
-
-| Metric | Value |
-|--------|-------|
-| Audit log rows | 15 (+15 DRY_RUN) |
-| claims count | 5,002 (unchanged) |
-| members count | 3,000 (unchanged) |
-| providers count | 1,005 (unchanged) |
-
-### Verification
-
-1. **`action` field present** — every `conditions_applied` JSON includes `"action": "CREATE"` (correct for a fresh environment with no prior archives).
-2. **`would_archive` = `total_eligible`** — correctly reflects that all eligible rows would be archived on a live CREATE run.
-3. **Source data untouched** — all three table counts match the before state exactly.
-4. **No archive folders created** — dry run mode only queries, never writes.
-5. **Only DRY_RUN entries** — the run produced only DRY_RUN audit rows, no live operations.
-
----
-
-## Run — 2026-04-07 (previous)
-
-**Date:** 2026-04-07
-**Run ID:** `b7209f76-b411-41fe-b8bd-56d534030f33`
-**Job URL:** https://e2-demo-field-eng.cloud.databricks.com/?o=1444828305810485#job/197650125146998/run/1099249755759883
-**Status:** PASS
-
----
-
-## Context
-
-This dry run was the first after the **Dry Run Action Prediction** refactor:
-- `_resolve_year_action` now determines `CREATE / APPEND / SKIP / RESUME_DELETE / ERROR`
-- `_dry_run_year` calls `_resolve_year_action` so dry runs predict the same action a live run would take
-- The `action` field is now included in the audit `conditions_applied` JSON and in the notebook summary
-
-Since prior tests (05–10) already archived all eligible years, this dry run correctly predicts **SKIP** for every table+year — the same result a live run would produce.
-
----
-
-## Before
-
-| Metric | Value |
-|--------|-------|
-| Audit log rows | 192 |
-| Last run ID | `d08564fc-b783-439f-8b5b-56dd691015f4` |
-| claims count | 5,002 |
-| members count | 3,000 |
-| providers count | 5 |
-
-## Dry Run Results
-
-**19 DRY_RUN entries** logged across **5 tables**. All show `action = SKIP`, `would_archive = 0`.
-
-### claims (8 years)
-
-| Year | Action | Eligible | Would Archive |
-|------|--------|----------|---------------|
-| 2018 | SKIP | 623 | 0 |
-| 2019 | SKIP | 624 | 0 |
-| 2020 | SKIP | 625 | 0 |
-| 2021 | SKIP | 623 | 0 |
-| 2022 | SKIP | 624 | 0 |
-| 2023 | SKIP | 624 | 0 |
-| 2024 | SKIP | 622 | 0 |
-| 2025 | SKIP | 622 | 0 |
-
-### members (7 years)
-
-| Year | Action | Eligible | Would Archive |
-|------|--------|----------|---------------|
-| 2019 | SKIP | 426 | 0 |
-| 2020 | SKIP | 426 | 0 |
-| 2021 | SKIP | 427 | 0 |
-| 2022 | SKIP | 428 | 0 |
-| 2023 | SKIP | 429 | 0 |
-| 2024 | SKIP | 426 | 0 |
-| 2025 | SKIP | 428 | 0 |
-
-### bronze_table_lineage (1 year)
-
-| Year | Action | Eligible | Would Archive |
-|------|--------|----------|---------------|
-| 2026 | SKIP | 30,010,157 | 0 |
-
-### gold_daily_access_trends (1 year)
-
-| Year | Action | Eligible | Would Archive |
-|------|--------|----------|---------------|
-| 2026 | SKIP | 60,709 | 0 |
-
-### silver_query_table_access (2 years)
-
-| Year | Action | Eligible | Would Archive |
-|------|--------|----------|---------------|
-| 2025 | SKIP | 1,795 | 0 |
-| 2026 | SKIP | 8,304,946 | 0 |
-
-### Not included
-
-- **providers** — only 5 source rows remain (deleted in test 09), all in recent years beyond the retention cutoff.
-- **bronze_column_lineage**, **bronze_query_history** — not eligible or not configured as active.
-
-## After
-
-| Metric | Value |
-|--------|-------|
-| Audit log rows | 211 (+19 DRY_RUN) |
-| claims count | 5,002 (unchanged) |
-| members count | 3,000 (unchanged) |
-| providers count | 5 (unchanged) |
-
-## Verification
-
-1. **`action` field present** — every `conditions_applied` JSON includes `"action": "SKIP"` (the new field from the refactor).
-2. **`would_archive = 0`** — correctly reflects that existing archives cover all data; a live run would skip these years.
-3. **Source data untouched** — all three table counts match the before state exactly.
-4. **No archive folders created** — dry run mode only queries, never writes.
-5. **No non-DRY_RUN entries** — the run produced only DRY_RUN audit rows.

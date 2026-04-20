@@ -1,0 +1,40 @@
+# CareSource Rehydrate — restores archived data as views in a target schema.
+# Compute-neutral: cluster or serverless is determined per-target in databricks.yml.
+
+resources:
+  jobs:
+    caresource_rehydrate:
+      name: caresource-archive-rehydrate
+      run_as:
+        service_principal_name: ${var.job_run_as_service_principal}
+      parameters:
+        - name: config_table
+          default: ""
+        - name: archive_base_path
+          default: ""
+        - name: source_table
+          default: ""
+        - name: target_catalog
+          default: ""
+        - name: target_schema
+          default: ""
+        - name: years
+          default: ""
+        - name: include_live_data
+          default: "false"
+        - name: unified_view_suffix
+          default: "_unified"
+      tasks:
+        - task_key: run_rehydrate
+          max_retries: 0
+          notebook_task:
+            notebook_path: ../notebooks/run_rehydrate.py
+            base_parameters:
+              config_table: "{{job.parameters.config_table}}"
+              archive_base_path: "{{job.parameters.archive_base_path}}"
+              source_table: "{{job.parameters.source_table}}"
+              target_catalog: "{{job.parameters.target_catalog}}"
+              target_schema: "{{job.parameters.target_schema}}"
+              years: "{{job.parameters.years}}"
+              include_live_data: "{{job.parameters.include_live_data}}"
+              unified_view_suffix: "{{job.parameters.unified_view_suffix}}"

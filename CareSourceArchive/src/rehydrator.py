@@ -17,28 +17,27 @@ class RehydrationEngine:
         parts = source_table.strip().split(".")
         return parts[-1] if parts else source_table.strip()
 
-    def _create_external_table(self, source_table, year, fq_table, loc_path):
-        safe_loc_path = loc_path.replace("'", "''")
-        loc_sql = (
-            f"CREATE TABLE IF NOT EXISTS {fq_table} USING DELTA LOCATION '{safe_loc_path}'"
+    def _create_archive_view(self, source_table, year, fq_view, loc_path):
+        view_sql = (
+            f"CREATE OR REPLACE VIEW {fq_view} AS SELECT * FROM delta.`{loc_path}`"
         )
         try:
-            self._spark.sql(loc_sql)
+            self._spark.sql(view_sql)
         except Exception as exc:
             msg = ArchiveError.diagnostic_message(
                 "FAILED",
                 "operation_failure",
                 table=source_table,
                 year=year,
-                operation="create_external_table",
+                operation="create_archive_view",
                 error=str(exc),
             )
             raise ArchiveOperationError(
                 msg,
                 table=source_table,
                 year=year,
-                operation="create_external_table",
-                reason="location_create_failed",
+                operation="create_archive_view",
+                reason="view_create_failed",
             ) from exc
 
     def run(self, params):
@@ -82,11 +81,13 @@ class RehydrationEngine:
             }
             table_prefix = params.get("table_prefix", "")
             create_unified_view = params.get("create_unified_view", True)
+            include_live_data = params.get("include_live_data", False)
+            unified_view_suffix = params.get("unified_view_suffix", "_unified")
 
             base_name = self._source_base_name(source_table)
             prefixed_base = f"{table_prefix}{base_name}"
             view_name = (
-                f"{target_catalog}.{target_schema}.{prefixed_base}_unified"
+                f"{target_catalog}.{target_schema}.{prefixed_base}{unified_view_suffix}"
                 if create_unified_view
                 else None
             )
@@ -104,7 +105,7 @@ class RehydrationEngine:
                     continue
                 loc_path = build_archive_path(archive_base_path, base_name, year)
                 ext_fq = f"{target_catalog}.{target_schema}.{prefixed_base}_year_{year}"
-                self._create_external_table(source_table, year, ext_fq, loc_path)
+                self._create_archive_view(source_table, year, ext_fq, loc_path)
                 tables_created += 1
                 created_years.append(year)
 
@@ -125,7 +126,9 @@ class RehydrationEngine:
                 )
 
             if create_unified_view:
-                select_parts = [f"SELECT * FROM {source_table}"]
+                select_parts = []
+                if include_live_data:
+                    select_parts.append(f"SELECT * FROM {source_table}")
                 for y in created_years:
                     ext_fq = f"{target_catalog}.{target_schema}.{prefixed_base}_year_{y}"
                     select_parts.append(f"SELECT * FROM {ext_fq}")

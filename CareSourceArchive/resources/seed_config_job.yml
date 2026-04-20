@@ -5,9 +5,8 @@ resources:
   jobs:
     seed_config:
       name: caresource-archive-seed-config
-      permissions:
-        - user_name: ${var.job_manage_user}
-          level: CAN_MANAGE
+      run_as:
+        service_principal_name: ${var.job_run_as_service_principal}
       tasks:
         - task_key: seed_config
           notebook_task:

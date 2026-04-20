@@ -2,9 +2,6 @@
 .*/
 .cursor/
 
-# ── Documentation (generated / local-only) ──
-docs/
-
 # ── Python ──
 __pycache__/
 *.py[cod]

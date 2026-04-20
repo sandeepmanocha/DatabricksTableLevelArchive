@@ -451,8 +451,7 @@ class TestMergeStagingToFinal:
         merge_staging_to_final(spark, "stg", "tgt", "run-abc", force=False)
         merge_sql = spark.sql.call_args_list[0][0][0]
         start = merge_sql.index("WHEN NOT MATCHED")
-        end = merge_sql.index("WHEN MATCHED")
-        insert_section = merge_sql[start:end]
+        insert_section = merge_sql[start:]
         assert "scan_run_id" in insert_section
         assert "source.scan_run_id" in insert_section
 

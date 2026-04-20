@@ -1,26 +1,24 @@
-# Workspace Parameters Reference
+# Workspace Parameters
 
-All test case commands use placeholders. Substitute from the row matching your workspace.
+Before running any test, **ask the user** for:
 
-| Placeholder | DEFAULT (e2-demo-field-eng) | fe-sandbox-manocha |
-|---|---|---|
-| `<PROFILE>` | `DEFAULT` | `fe-sandbox-manocha` |
-| `<TARGET>` | `dev` | `dev-serverless` |
-| `<CONFIG_TABLE>` | `sandeep_manocha.caresource_audit.global_settings` | `dev2_archive.metadata.global_settings` |
-| `<SOURCE_CATALOG>` | `sandeep_manocha` | `dev2_archive` |
-| `<SOURCE_SCHEMA>` | `source_data_samples` | `source_data_samples` |
-| `<AUDIT_TABLE>` | `sandeep_manocha.caresource_audit.archive_audit_log` | `dev2_archive.metadata.archive_audit_log` |
-| `<CONFIG_TABLES_PREFIX>` | `sandeep_manocha.caresource_audit` | `dev2_archive.metadata` |
-| `<ARCHIVE_VOL>` | `/Volumes/sandeep_manocha/caresource_archive/caresource_archive_vol/source_data_samples` | `/Volumes/dev2_archive/source_data_samples_archive/sample_data_archive_ext_vol/source_data_samples` |
-| `<REHYDRATE_TARGET_SCHEMA>` | `caresource_rehydrated` | `caresource_rehydrated` |
-| `<REHYDRATION_AUDIT_TABLE>` | `sandeep_manocha.caresource_audit.rehydration_audit_log` | `dev2_archive.metadata.rehydration_audit_log` |
-| `<REHYDRATE_ZERO_TEST_SCHEMA>` | `caresource_rehydrated_22_zero` | `caresource_rehydrated_22_zero` |
+| Parameter | Example |
+|---|---|
+| `PROFILE` | `DEFAULT`, `fe-sandbox-manocha` |
+| `TARGET` | `dev`, `dev-serverless` |
+| `SOURCE_CATALOG` | `sandeep_manocha` |
+| `SOURCE_SCHEMA` | `source_data_samples` |
 
-> **IMPORTANT:** Always pass `source_catalog` and `source_schema` as explicit params to archive and scanner run commands. Omitting them has caused silent failures in past tests.
+All other values derive from these (config tables live under `<SOURCE_CATALOG>.caresource_audit` or a metadata schema the user specifies).
 
-## Adding a new workspace
+## Quick-reference: bundle deploy & run
 
-1. Deploy the bundle to the new target (see `docs/runbooks/dab-commands.md`).
-2. Run `setup_config_tables` and `seed_config` to create the metadata tables.
-3. Query `schema_templates` for `source_catalog`, `source_schema`, and `archive_base_path`.
-4. Add a column to the table above.
+```bash
+databricks bundle deploy -t <TARGET> --profile <PROFILE>
+
+databricks bundle run <RESOURCE> -t <TARGET> --profile <PROFILE> \
+  --params key1=val1 \
+  --params key2=val2
+```
+
+> **CLI quoting note:** Pass each parameter as a separate `--params` flag. Values containing commas (e.g. `years`) must use inner quotes: `--params 'years="2020,2021"'`. The notebook strips quote artifacts.

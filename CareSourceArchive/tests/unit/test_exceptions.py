@@ -278,6 +278,7 @@ class TestIsNotFound:
         "No such file or directory /Volumes/cat/sch/vol",
         "PATH_NOT_FOUND: /some/path",
         "/Volumes/cat/sch/vol does not exist",
+        "[SCHEMA_NOT_FOUND] The schema `cat`.`sch` cannot be found.",
     ])
     def test_returns_true_for_not_found(self, msg):
         assert ArchiveError.is_not_found(Exception(msg)) is True

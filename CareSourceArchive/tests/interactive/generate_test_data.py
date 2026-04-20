@@ -499,7 +499,11 @@ display(spark.sql(f"SELECT is_active, COUNT(*) AS cnt FROM {PROVIDERS_TABLE} GRO
 # MAGIC
 # MAGIC ```
 # MAGIC databricks bundle run caresource_rehydrate -t dev \
-# MAGIC   --params config_table=sandeep_manocha.caresource_audit.global_settings,source_table=claims,years=2020,target_catalog=sandeep_manocha,target_schema=caresource_rehydrated
+# MAGIC   --params config_table=sandeep_manocha.caresource_audit.global_settings \
+# MAGIC   --params source_table=claims \
+# MAGIC   --params years=2020 \
+# MAGIC   --params target_catalog=sandeep_manocha \
+# MAGIC   --params target_schema=caresource_rehydrated
 # MAGIC ```
 # MAGIC
 # MAGIC **Check:** External table created. Unified view combines current + restored data. Rehydration audit logged.

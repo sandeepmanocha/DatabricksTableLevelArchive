@@ -5,9 +5,8 @@ resources:
   jobs:
     caresource_scanner:
       name: caresource-archive-scanner
-      permissions:
-        - user_name: ${var.job_manage_user}
-          level: CAN_MANAGE
+      run_as:
+        service_principal_name: ${var.job_run_as_service_principal}
       parameters:
         - name: config_table
           default: ""

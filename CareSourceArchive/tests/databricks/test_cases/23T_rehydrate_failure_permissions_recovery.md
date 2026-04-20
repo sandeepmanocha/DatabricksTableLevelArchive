@@ -1,6 +1,6 @@
 # 23 — Rehydration Failure Cascade, Permission Denial, Audit Fallback, and Recovery
 
-**Goal:** Verify `FAILED` status paths across escalating failure scenarios — missing params, bad archive path, permission denial, audit infrastructure failure — then prove the system recovers cleanly.
+**Goal:** Verify `FAILED` status paths across escalating failure scenarios — missing params, bad archive path, permission denial, audit infrastructure failure — then prove the system recovers cleanly. The rehydrator creates per-year **views** (`CREATE OR REPLACE VIEW ... AS SELECT * FROM delta.\`path\``) and a unified view. By default (`include_live_data=false`), the unified view contains only archive data.
 
 **Depends on:** 05_archive_live_create (archives must exist for claims; year folders for 2020 and 2021 must be present under the claims archive layout)
 
@@ -34,7 +34,7 @@
 >
 > | Placeholder | Description |
 > | --- | --- |
-> | `<REHYDRATE_TARGET_SCHEMA>` | Schema where external tables and unified view are created (e.g. `caresource_rehydrated`). Must be safe to drop and recreate during this test. |
+> | `<REHYDRATE_TARGET_SCHEMA>` | Schema where per-year views and unified view are created (e.g. `caresource_rehydrated`). Must be safe to drop and recreate during this test. |
 > | `<REHYDRATION_AUDIT_TABLE>` | Full name of `rehydration_audit_log` — typically `<CONFIG_TABLES_PREFIX>.rehydration_audit_log`. |
 >
 > **Rehydration job parameters:** `config_table`, `archive_base_path`, `source_table`, `target_catalog`, `target_schema`, `years` (see each phase).
@@ -69,7 +69,12 @@ Run rehydration with an **empty** `source_table` widget value (empty string). Ke
 
 ```bash
 databricks bundle run caresource_rehydrate -t <TARGET> --profile <PROFILE> \
-  --params config_table="<CONFIG_TABLE>",archive_base_path="<ARCHIVE_VOL>",source_table="",target_catalog="<SOURCE_CATALOG>",target_schema="<REHYDRATE_TARGET_SCHEMA>",years="2020,2021"
+  --params config_table=<CONFIG_TABLE> \
+  --params archive_base_path=<ARCHIVE_VOL> \
+  --params source_table="" \
+  --params target_catalog=<SOURCE_CATALOG> \
+  --params target_schema=<REHYDRATE_TARGET_SCHEMA> \
+  --params 'years="2020,2021"'
 ```
 
 **Expect:**
@@ -87,7 +92,12 @@ Use a non-existent volume path for `archive_base_path`. Keep `source_table`, `ta
 
 ```bash
 databricks bundle run caresource_rehydrate -t <TARGET> --profile <PROFILE> \
-  --params config_table="<CONFIG_TABLE>",archive_base_path="/Volumes/<SOURCE_CATALOG>/nonexistent_volume/bad_path",source_table="<SOURCE_CATALOG>.<SOURCE_SCHEMA>.claims",target_catalog="<SOURCE_CATALOG>",target_schema="<REHYDRATE_TARGET_SCHEMA>",years="2020,2021"
+  --params config_table=<CONFIG_TABLE> \
+  --params archive_base_path=/Volumes/<SOURCE_CATALOG>/nonexistent_volume/bad_path \
+  --params source_table=<SOURCE_CATALOG>.<SOURCE_SCHEMA>.claims \
+  --params target_catalog=<SOURCE_CATALOG> \
+  --params target_schema=<REHYDRATE_TARGET_SCHEMA> \
+  --params 'years="2020,2021"'
 ```
 
 **Expect:**
@@ -95,7 +105,7 @@ databricks bundle run caresource_rehydrate -t <TARGET> --profile <PROFILE> \
 - **Job fails.**
 - **Either:**
   - **No archive folders** at the bad base path: the notebook builds `available_archive_years` as an empty list, the engine skips every requested year, then raises `ArchiveOperationError` with `reason=no_years_restored` after the loop; or
-  - **Folders incorrectly appear present** (unlikely on a bad path): the first `CREATE TABLE ... USING DELTA LOCATION` fails and the engine raises with `reason=location_create_failed`.
+  - **Folders incorrectly appear present** (unlikely on a bad path): the first `CREATE OR REPLACE VIEW ... AS SELECT * FROM delta.\`path\`` fails and the engine raises with `reason=view_create_failed`.
 - **Audit:** Latest row for this run has `status` = `FAILED`. `error_message` should reference the failure (e.g. `no requested years restored` or the Delta/location exception) and may include the bad path in the diagnostic text.
 - **Notebook:** On `ArchiveOperationError`, expect LOG-04 HTML with escaped exception text.
 
@@ -118,12 +128,17 @@ Use a **catalog the job’s identity cannot write to** (commonly `main`) for `ta
 
 ```bash
 databricks bundle run caresource_rehydrate -t <TARGET> --profile <PROFILE> \
-  --params config_table="<CONFIG_TABLE>",archive_base_path="<ARCHIVE_VOL>",source_table="<SOURCE_CATALOG>.<SOURCE_SCHEMA>.claims",target_catalog="main",target_schema="<REHYDRATE_TARGET_SCHEMA>",years="2020,2021"
+  --params config_table=<CONFIG_TABLE> \
+  --params archive_base_path=<ARCHIVE_VOL> \
+  --params source_table=<SOURCE_CATALOG>.<SOURCE_SCHEMA>.claims \
+  --params target_catalog=main \
+  --params target_schema=<REHYDRATE_TARGET_SCHEMA> \
+  --params 'years="2020,2021"'
 ```
 
 **Expect:**
 
-- **Job fails** with a permission or authorization error during `CREATE SCHEMA IF NOT EXISTS` / `CREATE TABLE ... USING DELTA LOCATION` / related DDL (exact message depends on Unity Catalog grants).
+- **Job fails** with a permission or authorization error during `CREATE SCHEMA IF NOT EXISTS` / `CREATE OR REPLACE VIEW` / related DDL (exact message depends on Unity Catalog grants).
 - **Audit catalog is separate** from `target_catalog`: audit still targets `<CONFIG_TABLES_PREFIX>` from `global_settings`. Expect a **FAILED** row written to `<REHYDRATION_AUDIT_TABLE>` with `error_message` containing the permission-related exception text (and stack/context appended by the engine’s failure handler).
 - **Notebook:** LOG-04 HTML with the failure message.
 
@@ -152,7 +167,12 @@ databricks experimental aitools tools query \
 
 ```bash
 databricks bundle run caresource_rehydrate -t <TARGET> --profile <PROFILE> \
-  --params config_table="<CONFIG_TABLE>",archive_base_path="<ARCHIVE_VOL>",source_table="<SOURCE_CATALOG>.<SOURCE_SCHEMA>.claims",target_catalog="<SOURCE_CATALOG>",target_schema="<REHYDRATE_TARGET_SCHEMA>",years="2020,2021"
+  --params config_table=<CONFIG_TABLE> \
+  --params archive_base_path=<ARCHIVE_VOL> \
+  --params source_table=<SOURCE_CATALOG>.<SOURCE_SCHEMA>.claims \
+  --params target_catalog=<SOURCE_CATALOG> \
+  --params target_schema=<REHYDRATE_TARGET_SCHEMA> \
+  --params 'years="2020,2021"'
 ```
 
 **Expect (branch A — `ensure_rehydration_audit_table` succeeds):**
@@ -214,14 +234,19 @@ databricks experimental aitools tools query \
 
 ```bash
 databricks bundle run caresource_rehydrate -t <TARGET> --profile <PROFILE> \
-  --params config_table="<CONFIG_TABLE>",archive_base_path="<ARCHIVE_VOL>",source_table="<SOURCE_CATALOG>.<SOURCE_SCHEMA>.claims",target_catalog="<SOURCE_CATALOG>",target_schema="<REHYDRATE_TARGET_SCHEMA>",years="2020,2021"
+  --params config_table=<CONFIG_TABLE> \
+  --params archive_base_path=<ARCHIVE_VOL> \
+  --params source_table=<SOURCE_CATALOG>.<SOURCE_SCHEMA>.claims \
+  --params target_catalog=<SOURCE_CATALOG> \
+  --params target_schema=<REHYDRATE_TARGET_SCHEMA> \
+  --params 'years="2020,2021"'
 ```
 
 **Expect:**
 
 - Job **succeeds**.
 - **Audit:** New row with `status` = `COMPLETED`, `tables_created` = **2**, `error_message` null (or empty).
-- **Data:** `SHOW TABLES` in `<SOURCE_CATALOG>.<REHYDRATE_TARGET_SCHEMA>` lists external year tables and `claims_unified`; a grouped count query on `claims_unified` runs successfully.
+- **Data:** `SHOW TABLES` in `<SOURCE_CATALOG>.<REHYDRATE_TARGET_SCHEMA>` lists per-year views and `claims_unified`; a grouped count query on `claims_unified` runs successfully.
 
 ```bash
 databricks experimental aitools tools query \

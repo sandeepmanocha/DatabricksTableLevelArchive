@@ -1,6 +1,6 @@
-# 21 — Rehydration Happy Path, Re-run, and Object Collision
+# 21 — Rehydration Happy Path and Idempotent Re-run
 
-**Goal:** Verify full rehydration success, idempotent re-run safety, and behavior when TABLE/VIEW name collisions exist in the target schema.
+**Goal:** Verify full rehydration success and idempotent re-run safety. The rehydrator creates per-year **views** (`CREATE OR REPLACE VIEW ... AS SELECT * FROM delta.\`path\``) and a unified view. By default, the unified view contains **archive data only** (`include_live_data=false`). ~~Phases 3–4 (table/view name collisions) are skipped — the rehydrator only creates views, so those scenarios test Spark SQL semantics rather than rehydrator logic.~~
 
 **Depends on:** 05_archive_live_create (archives must exist for claims years 2020 and 2021)
 
@@ -21,7 +21,7 @@
 >    - **Archive volume (claims):** Year folders for **2020** and **2021** must exist with valid Delta data (from test 05). The rehydration job reads `{archive_base_path}/claims/year_YYYY` under `<ARCHIVE_VOL>`. If folders are missing or empty, run test 05 first.
 >    - **Target schema:** `<SOURCE_CATALOG>.<REHYDRATE_TARGET_SCHEMA>` should **not** exist at the start of Phase 1 unless you intentionally run `DROP SCHEMA IF EXISTS ... CASCADE` in the steps below. If it exists from a prior run, tell the user — it may need `DROP SCHEMA ... CASCADE` cleanup before a clean Phase 1.
 >    - **Rehydration audit table:** Must exist at `<REHYDRATION_AUDIT_TABLE>`. If missing, run `setup_config_tables` / config seeding per project runbooks.
->    - **Source table:** `<SOURCE_CATALOG>.<SOURCE_SCHEMA>.claims` must have current-year data so the unified view (`CREATE OR REPLACE VIEW ...` union body) can include live rows alongside archived years.
+>    - **Source table:** `<SOURCE_CATALOG>.<SOURCE_SCHEMA>.claims` must exist. By default (`include_live_data=false`) the unified view only contains archived years; when `include_live_data=true` is passed, the view unions live rows alongside archived years.
 
 ---
 
@@ -33,10 +33,12 @@
 >
 > | Placeholder | Description |
 > | --- | --- |
-> | `<REHYDRATE_TARGET_SCHEMA>` | Schema where external tables and unified view are created (for example `caresource_rehydrated`). Must be safe to drop and recreate during this test. |
+> | `<REHYDRATE_TARGET_SCHEMA>` | Schema where per-year views and unified view are created (for example `caresource_rehydrated`). Must be safe to drop and recreate during this test. |
 > | `<REHYDRATION_AUDIT_TABLE>` | Full name of `rehydration_audit_log` — typically `<CONFIG_TABLES_PREFIX>.rehydration_audit_log` (same audit schema as archive metadata). |
 >
-> **Rehydrate job parameters:** `config_table`, `archive_base_path` (use `<ARCHIVE_VOL>` as the archive base path, consistent with test 14), `source_table`, `target_catalog`, `target_schema`, `years`.
+> **Rehydrate job parameters:** `config_table`, `archive_base_path` (use `<ARCHIVE_VOL>` as the archive base path, consistent with test 14), `source_table`, `target_catalog`, `target_schema`, `years`, `include_live_data` (default `"false"`), `unified_view_suffix` (default `"_unified"`).
+>
+> **CLI quoting:** Pass each parameter as a separate `--params` flag. The `years` value contains a comma, which conflicts with the CLI's comma-separated param parsing — use inner quotes: `--params 'years="2020,2021"'`. The notebook strips the quote artifacts.
 
 ---
 
@@ -88,7 +90,12 @@ Run rehydration for 2020 and 2021:
 
 ```bash
 databricks bundle run caresource_rehydrate -t <TARGET> --profile <PROFILE> \
-  --params config_table="<CONFIG_TABLE>",archive_base_path="<ARCHIVE_VOL>",source_table="<SOURCE_CATALOG>.<SOURCE_SCHEMA>.claims",target_catalog="<SOURCE_CATALOG>",target_schema="<REHYDRATE_TARGET_SCHEMA>",years="2020,2021"
+  --params config_table=<CONFIG_TABLE> \
+  --params archive_base_path=<ARCHIVE_VOL> \
+  --params source_table=<SOURCE_CATALOG>.<SOURCE_SCHEMA>.claims \
+  --params target_catalog=<SOURCE_CATALOG> \
+  --params target_schema=<REHYDRATE_TARGET_SCHEMA> \
+  --params 'years="2020,2021"'
 ```
 
 **Expect:**
@@ -98,7 +105,7 @@ databricks bundle run caresource_rehydrate -t <TARGET> --profile <PROFILE> \
 
 ---
 
-### 2. Phase 1 — Verify tables, unified view, and audit log
+### 2. Phase 1 — Verify views, unified view, and audit log
 
 List objects:
 
@@ -131,8 +138,8 @@ databricks experimental aitools tools query \
 
 **Expect:**
 
-- `claims_year_2020` and `claims_year_2021` exist (external tables created with `CREATE TABLE IF NOT EXISTS ... USING DELTA LOCATION` in `rehydrator.py`).
-- `claims_unified` exists and the aggregate query succeeds (`CREATE OR REPLACE VIEW` path).
+- `claims_year_2020` and `claims_year_2021` exist as **views** (created with `CREATE OR REPLACE VIEW ... AS SELECT * FROM delta.\`path\`` in `rehydrator.py`).
+- `claims_unified` exists as a view; the aggregate query succeeds. By default (`include_live_data=false`), the unified view unions only the per-year archive views (no live source table).
 - Newest audit row: `status` = **COMPLETED**, `tables_created` = **2**, `archive_path` matches the passed `archive_base_path` string (`<ARCHIVE_VOL>`), `source_table` = `<SOURCE_CATALOG>.<SOURCE_SCHEMA>.claims`, `target_catalog` and `target_schema` match parameters, `years` stores the requested years (JSON string as written by the engine), `error_message` is null.
 
 ---
@@ -155,13 +162,18 @@ databricks experimental aitools tools query \
 
 ```bash
 databricks bundle run caresource_rehydrate -t <TARGET> --profile <PROFILE> \
-  --params config_table="<CONFIG_TABLE>",archive_base_path="<ARCHIVE_VOL>",source_table="<SOURCE_CATALOG>.<SOURCE_SCHEMA>.claims",target_catalog="<SOURCE_CATALOG>",target_schema="<REHYDRATE_TARGET_SCHEMA>",years="2020,2021"
+  --params config_table=<CONFIG_TABLE> \
+  --params archive_base_path=<ARCHIVE_VOL> \
+  --params source_table=<SOURCE_CATALOG>.<SOURCE_SCHEMA>.claims \
+  --params target_catalog=<SOURCE_CATALOG> \
+  --params target_schema=<REHYDRATE_TARGET_SCHEMA> \
+  --params 'years="2020,2021"'
 ```
 
 **Expect:**
 
-- No failure from `CREATE TABLE IF NOT EXISTS ... USING DELTA LOCATION` (idempotent no-op when external tables already exist).
-- `CREATE OR REPLACE VIEW` runs again and refreshes the unified view without error.
+- No failure — `CREATE OR REPLACE VIEW` is inherently idempotent (replaces existing per-year views).
+- The unified view is also recreated via `CREATE OR REPLACE VIEW` without error.
 - Job completes successfully.
 
 ---
@@ -199,130 +211,9 @@ databricks experimental aitools tools query \
 
 ---
 
-### 6. Phase 3 — TABLE occupies unified view name (setup)
+### 6–11. Phases 3 & 4 — SKIPPED
 
-Drop the target schema and recreate it empty, then pre-create a **base table** named `claims_unified` so `CREATE OR REPLACE VIEW ...` collides:
-
-```bash
-databricks experimental aitools tools query \
-  "DROP SCHEMA IF EXISTS <SOURCE_CATALOG>.<REHYDRATE_TARGET_SCHEMA> CASCADE" \
-  --profile <PROFILE>
-```
-
-```bash
-databricks experimental aitools tools query \
-  "CREATE SCHEMA IF NOT EXISTS <SOURCE_CATALOG>.<REHYDRATE_TARGET_SCHEMA>" \
-  --profile <PROFILE>
-```
-
-```bash
-databricks experimental aitools tools query \
-  "CREATE TABLE <SOURCE_CATALOG>.<REHYDRATE_TARGET_SCHEMA>.claims_unified (id INT)" \
-  --profile <PROFILE>
-```
-
-**Expect:** `claims_unified` is a **table**, not a view.
-
----
-
-### 7. Phase 3 — Run rehydration (expect unified view failure)
-
-```bash
-databricks bundle run caresource_rehydrate -t <TARGET> --profile <PROFILE> \
-  --params config_table="<CONFIG_TABLE>",archive_base_path="<ARCHIVE_VOL>",source_table="<SOURCE_CATALOG>.<SOURCE_SCHEMA>.claims",target_catalog="<SOURCE_CATALOG>",target_schema="<REHYDRATE_TARGET_SCHEMA>",years="2020,2021"
-```
-
-**Expect:**
-
-- Run surfaces a failure (notebook error / non-zero outcome) when `CREATE OR REPLACE VIEW` cannot claim the name `claims_unified` because a table already occupies it (`reason=view_create_failed` in engine terms).
-
----
-
-### 8. Phase 3 — Verify FAILED audit and error text
-
-```bash
-databricks experimental aitools tools query \
-  "SELECT archive_path, source_table, target_catalog, target_schema, years, tables_created, status, error_message, created_at
-   FROM <REHYDRATION_AUDIT_TABLE>
-   ORDER BY created_at DESC
-   LIMIT 5" \
-  --profile <PROFILE>
-```
-
-**Expect:**
-
-- Newest row: `status` = **FAILED**.
-- `error_message` documents the unified-view failure and/or a **name conflict** involving `claims_unified` (capture the verbatim Spark/Databricks text in results).
-- `tables_created` reflects how many external tables were registered before the view step failed (often **2** if both `CREATE TABLE IF NOT EXISTS` calls succeeded).
-
----
-
-### 9. Phase 4 — VIEW occupies external table name (setup)
-
-Reset the target schema and pre-create a **view** named `claims_year_2020`:
-
-```bash
-databricks experimental aitools tools query \
-  "DROP SCHEMA IF EXISTS <SOURCE_CATALOG>.<REHYDRATE_TARGET_SCHEMA> CASCADE" \
-  --profile <PROFILE>
-```
-
-```bash
-databricks experimental aitools tools query \
-  "CREATE SCHEMA IF NOT EXISTS <SOURCE_CATALOG>.<REHYDRATE_TARGET_SCHEMA>" \
-  --profile <PROFILE>
-```
-
-```bash
-databricks experimental aitools tools query \
-  "CREATE VIEW <SOURCE_CATALOG>.<REHYDRATE_TARGET_SCHEMA>.claims_year_2020 AS SELECT 1 AS dummy" \
-  --profile <PROFILE>
-```
-
-**Expect:** `claims_year_2020` exists as a **view** before rehydration.
-
----
-
-### 10. Phase 4 — Run rehydration and observe `CREATE TABLE IF NOT EXISTS` behavior
-
-```bash
-databricks bundle run caresource_rehydrate -t <TARGET> --profile <PROFILE> \
-  --params config_table="<CONFIG_TABLE>",archive_base_path="<ARCHIVE_VOL>",source_table="<SOURCE_CATALOG>.<SOURCE_SCHEMA>.claims",target_catalog="<SOURCE_CATALOG>",target_schema="<REHYDRATE_TARGET_SCHEMA>",years="2020,2021"
-```
-
-**Expect:**
-
-- **Document actual behavior** in the results file: whether `CREATE TABLE IF NOT EXISTS <schema>.claims_year_2020 USING DELTA LOCATION '...'` **succeeds silently**, **fails** with an error, or **raises** — include full message, job outcome, and final `status` (**COMPLETED**, **PARTIAL_COMPLETED**, or **FAILED**). Do not assume; Spark may reject creating a table when a view holds the name.
-
----
-
-### 11. Phase 4 — Verify post-state and audit
-
-```bash
-databricks experimental aitools tools query \
-  "SHOW TABLES IN <SOURCE_CATALOG>.<REHYDRATE_TARGET_SCHEMA>" \
-  --profile <PROFILE>
-```
-
-```bash
-databricks experimental aitools tools query \
-  "DESCRIBE TABLE EXTENDED <SOURCE_CATALOG>.<REHYDRATE_TARGET_SCHEMA>.claims_year_2020" \
-  --profile <PROFILE>
-```
-
-```bash
-databricks experimental aitools tools query \
-  "SELECT archive_path, source_table, target_catalog, target_schema, years, tables_created, status, error_message, created_at
-   FROM <REHYDRATION_AUDIT_TABLE>
-   ORDER BY created_at DESC
-   LIMIT 3" \
-  --profile <PROFILE>
-```
-
-**Expect:**
-
-- Results show whether `claims_year_2020` stayed a view, was replaced by an external table, or another outcome consistent with step 10.
-- Latest audit row matches the observed `status` and any `error_message`.
+> **Skipped.** The rehydrator now creates **views** (`CREATE OR REPLACE VIEW`), not tables. The table-name collision scenarios (pre-creating a base TABLE to block `CREATE OR REPLACE VIEW`) test Spark/Databricks SQL semantics rather than rehydrator logic. These phases may be revisited if the rehydrator adds `DROP TABLE IF EXISTS` guards or if collision handling becomes a requirement.
 
 ---
 
@@ -340,4 +231,4 @@ databricks experimental aitools tools query \
 
 ## Reference (engine SQL)
 
-From `rehydrator.py`: each year uses `CREATE TABLE IF NOT EXISTS {fq_table} USING DELTA LOCATION '{loc_path}'`; the unified view uses `CREATE OR REPLACE VIEW {view_name} AS { UNION ALL ... }`. Name collisions surface as SQL errors on the corresponding statement.
+From `rehydrator.py`: each year uses `CREATE OR REPLACE VIEW {fq_view} AS SELECT * FROM delta.\`{loc_path}\``; the unified view uses `CREATE OR REPLACE VIEW {view_name} AS { UNION ALL ... }`. By default (`include_live_data=false`), the unified view unions only per-year archive views; with `include_live_data=true`, the live source table is included. Name collisions between tables and views surface as SQL errors on the corresponding `CREATE OR REPLACE VIEW` statement.

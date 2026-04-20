@@ -1,6 +1,190 @@
 # 05 — Archive Live Run (CREATE mode) Results
 
-## Run — 2026-04-15 22:53 CDT
+## Run — 2026-04-20 00:47 CDT
+
+**TL;DR:** Live archive passed cleanly on first attempt (~202s). All 21 table-year partitions archived in CREATE mode; Delta row counts match audit `record_count` exactly for all 21 (100%). Source tables unchanged (`delete_after_archive=false`), NULL-watermark rows confirmed to stay in source (claims=15, members=10, providers=5 — exactly the 04T dry-run delta).
+
+**Branch:** `feat/delta_config_build_v6_dab`
+**Profile:** `fe-sandbox-manocha`
+**Workspace:** https://fe-sandbox-manocha.cloud.databricks.com
+**Bundle Target:** `dev-serverless`
+**Config table:** `dev2_archive.metadata.global_settings`
+**Audit log:** `dev2_archive.metadata.archive_audit_log`
+**Source:** `dev2_archive.source_data_samples` (`claims`, `members`, `providers`)
+**Archive base path:** `/Volumes/dev2_archive/source_data_samples_archive/sample_data_archive_ext_vol/source_data_samples` (from `schema_templates.archive_base_path`; the volume's base is `/Volumes/.../sample_data_archive_ext_vol` and the archiver adds the schema segment)
+**Run-as SP:** `44edd08d-b71a-4e29-a01b-4881be31a144` (`caresource-archive-dev`)
+**Retention:** `default_retention_years=0` → all years eligible
+**archive_run_id:** `67b52af0-d0c6-443d-ad48-2ac0677eca6f`
+**Job run URL:** https://fe-sandbox-manocha.cloud.databricks.com/?o=7474658872313088#job/645665657236546/run/160311664776002
+
+---
+
+### Pre-flight — **PASS**
+
+| Check | Result |
+|---|---|
+| `archive_audit_log` | 21 DRY_RUN rows from 04T, **0 ARCHIVED, 0 STARTED** → clean for CREATE |
+| `table_configs` | 3 active, `delete_after_archive=false`, `retention_years=0`; watermarks `claims/event_date`, `members/start_date`, `providers/effective_date` |
+| Archive volume | Volume exists, no per-table subfolders under `source_data_samples/` → no orphan/SKIP risk |
+| Source row counts (incl. NULL year bucket) | `claims`=5000 (8yr+15 NULL), `members`=3000 (7yr+10 NULL), `providers`=1000 (6yr+5 NULL) — matches 04T exactly |
+
+---
+
+### Step 1 — Run archive in live CREATE mode — **PASS**
+
+Command:
+
+```
+databricks bundle run caresource_archive_run -t dev-serverless --profile fe-sandbox-manocha \
+  --params config_table="dev2_archive.metadata.global_settings",dry_run="false",source_catalog="dev2_archive",source_schema="source_data_samples"
+```
+
+- Status: `TERMINATED SUCCESS` (all 3 tasks: `generate_parameters`, `run_archive_iteration`, `run_archive`)
+- Duration: ~202 s
+- Run URL above
+
+---
+
+### Step 2 — Audit log STARTED + ARCHIVED entries — **PASS**
+
+Final audit log breakdown:
+
+| status | archive_mode | count |
+|---|---|---|
+| `DRY_RUN` | (empty) | 21 (from 04T) |
+| `STARTED` | (empty) | 21 (this run) |
+| `ARCHIVED` | `CREATE` | 21 (this run) |
+
+All 21 `(table, year)` pairs have paired `STARTED` → `ARCHIVED` entries, all sharing `archive_run_id = 67b52af0-d0c6-443d-ad48-2ac0677eca6f`. All `ARCHIVED` rows carry a populated `watermark_value` (MAX of the watermark column for that year, e.g. `claims/2020 → 2020-12-30`, `claims/2025 → 2025-12-31`). ✓
+
+---
+
+### Step 3 — Archive Delta folders exist; row counts match audit — **PASS**
+
+All 21 archive Delta paths verified — row count per partition equals `record_count` in the audit log **exactly** (21/21 = 100% match):
+
+| table | year | archive rows | audit `record_count` | match |
+|---|---|---|---|---|
+| claims | 2018 | 623 | 623 | ✓ |
+| claims | 2019 | 624 | 624 | ✓ |
+| claims | 2020 | 623 | 623 | ✓ |
+| claims | 2021 | 623 | 623 | ✓ |
+| claims | 2022 | 624 | 624 | ✓ |
+| claims | 2023 | 624 | 624 | ✓ |
+| claims | 2024 | 622 | 622 | ✓ |
+| claims | 2025 | 622 | 622 | ✓ |
+| members | 2019 | 426 | 426 | ✓ |
+| members | 2020 | 426 | 426 | ✓ |
+| members | 2021 | 427 | 427 | ✓ |
+| members | 2022 | 428 | 428 | ✓ |
+| members | 2023 | 429 | 429 | ✓ |
+| members | 2024 | 426 | 426 | ✓ |
+| members | 2025 | 428 | 428 | ✓ |
+| providers | 2020 | 163 | 163 | ✓ |
+| providers | 2021 | 168 | 168 | ✓ |
+| providers | 2022 | 166 | 166 | ✓ |
+| providers | 2023 | 167 | 167 | ✓ |
+| providers | 2024 | 166 | 166 | ✓ |
+| providers | 2025 | 165 | 165 | ✓ |
+| **Totals** | | **4985 / 2990 / 995** | **4985 / 2990 / 995** | **all match** |
+
+Folder layout confirmed via `databricks fs ls dbfs:/Volumes/.../source_data_samples/<tbl>/`:
+
+- `claims/`: `year_2018 … year_2025` (8 folders)
+- `members/`: `year_2019 … year_2025` (7 folders)
+- `providers/`: `year_2020 … year_2025` (6 folders)
+
+---
+
+### Source data untouched (delete_after_archive=false) — **PASS**
+
+| tbl | pre-run | post-run | delta |
+|---|---|---|---|
+| `claims` | 5000 | 5000 | 0 |
+| `members` | 3000 | 3000 | 0 |
+| `providers` | 1000 | 1000 | 0 |
+
+---
+
+### NULL-watermark behavior — confirmed (closes 04T follow-up)
+
+04T predicted the ~0.3% `record_count` gap was NULL-watermark rows. After the live run:
+
+| tbl | source NULL rows | dry-run delta (04T) | match |
+|---|---|---|---|
+| `claims` (`event_date IS NULL`) | 15 | 15 | ✓ |
+| `members` (`start_date IS NULL`) | 10 | 10 | ✓ |
+| `providers` (`effective_date IS NULL`) | 5 | 5 | ✓ |
+
+Since `delete_after_archive=false` this run would not have deleted them anyway; but combined with the 04T dry-run evidence (record_count per year excluded exactly these NULL rows), the behavior is: **rows with NULL watermark do not fall into any year bucket and are therefore neither archived nor deleted**. Needs a policy decision — see Next Steps.
+
+---
+
+### Volume visibility discovery — catalog owner missing `READ_VOLUME`
+
+While running Step 3, `databricks fs ls` against the archive volume returned `Error: no such directory` for my user (`sandeep.manocha@databricks.com`), even though UC SQL reads of the same Delta paths worked fine. Root cause:
+
+```
+databricks grants get volume dev2_archive.source_data_samples_archive.sample_data_archive_ext_vol
+{
+  "privilege_assignments": [
+    {"principal": "44edd08d-b71a-4e29-a01b-4881be31a144", "privileges": ["READ_VOLUME","WRITE_VOLUME"]}
+  ]
+}
+```
+
+Only the run-as SP had volume privileges. **Catalog ownership does not cascade to `READ_VOLUME` on child volumes.** UC returns 404 ("no such directory") rather than 403 for missing-read cases on volumes. Two fixes were needed together:
+
+1. Self-grant: `GRANT READ VOLUME ON VOLUME dev2_archive.source_data_samples_archive.sample_data_archive_ext_vol TO \`sandeep.manocha@databricks.com\`;`
+2. Use `dbfs:/Volumes/...` path prefix for `databricks fs ls` (bare `/Volumes/...` gives "no such directory" even with the grant).
+
+After the grant + prefix fix, `databricks fs ls dbfs:/Volumes/...` lists `claims/`, `members/`, `providers/` and their `year_*` folders correctly. The SP has always had `READ_VOLUME` so it could see the folders throughout — `archive_folder_exists()` in `src/utils.py` uses `dbutils.fs.ls()` as the SP and works fine.
+
+This is the **third time** this environment has surfaced an ownership-vs-grant gap (see Next Steps).
+
+---
+
+### Final State
+
+| Item | Value |
+|---|---|
+| `archive_audit_log` | 63 rows total (21 DRY_RUN from 04T + 21 STARTED + 21 ARCHIVED from this run) |
+| Archive Delta folders | 21 `year_*` folders across claims/members/providers, all readable as Delta tables |
+| Source tables | Unchanged (5000 / 3000 / 1000) |
+| Volume grants | SP + owner both have `READ_VOLUME`; only SP has `WRITE_VOLUME` |
+
+---
+
+## What Happened
+
+1. **Pre-flight clean.** Audit log had no prior ARCHIVED or STARTED entries, archive volume had no orphan folders, all 3 tables active with correct watermarks and `delete_after_archive=false`.
+2. **Live run succeeded first try.** ~202s end-to-end. All 3 bundle tasks (`generate_parameters`, `run_archive_iteration`, `run_archive`) TERMINATED SUCCESS. No retries, no code changes, no manual intervention during the run.
+3. **Audit log is correct.** 21 STARTED + 21 ARCHIVED rows, all `archive_mode=CREATE`, all sharing one `archive_run_id`, all with populated `watermark_value` (MAX of watermark for the year). Pre-existing 21 DRY_RUN rows from 04T were untouched.
+4. **Archive folders match audit 1:1.** For every one of the 21 (table, year) pairs, `COUNT(*)` on the archive Delta equals the audit log's `record_count`. Sum totals match too (4985 / 2990 / 995).
+5. **Source untouched.** Counts still 5000 / 3000 / 1000 — confirms `delete_after_archive=false` is honored and this was a copy-only CREATE.
+6. **Closed the 04T NULL-watermark question.** Source NULL counts (15/10/5) match the 04T dry-run delta exactly, and they remained in source after the live run. NULL-watermark rows are neither archived nor deleted under current archiver logic.
+7. **Discovered a third ownership-vs-grant gap.** `databricks fs ls` on the volume failed for the catalog owner because only the SP had `READ_VOLUME`. UC returns 404 instead of 403, which made it look like the archiver hadn't written anything. After self-granting `READ_VOLUME` and switching to the `dbfs:/Volumes/...` path form, the CLI lists the archive folders correctly. SP's `READ_VOLUME + WRITE_VOLUME` worked fine throughout — archiver internals use `dbutils.fs.ls()` under the SP identity.
+
+---
+
+## Next Steps
+
+1. **Proceed to 06T (archive idempotent re-run).** Pre-conditions: 21 ARCHIVED + 21 matching folders now exist, so a re-run should produce `SKIP` (not `CREATE`, not `APPEND`) for every (table, year) pair. Any row that shows `merge_action=CREATE` on re-run is a bug.
+2. **Make a policy decision on NULL-watermark rows.** Three tables each have a small number of NULL-watermark rows (claims=15, members=10, providers=5) that are silently passed over by the archiver — neither archived nor deleted. Options:
+   - **Accept as-is:** document in `docs/archiver-behavior.md` that rows with NULL watermark are not archived and not eligible for `delete_after_archive` either.
+   - **Route to explicit NULL bucket:** archive NULL-watermark rows into a `year_null/` Delta folder and audit with `year = NULL` or a sentinel.
+   - **Dead-letter:** write NULL-watermark rows to a `dead_letter/` volume and raise a warning in the audit log (`status = WARNING`).
+3. **Fix the owner-vs-grant gap for volumes in the setup/seed job.** Third environment observation of the same class of bug:
+   - `seed_config.py` / `setup_config_tables.py` should grant the catalog owner `READ VOLUME ON VOLUME <archive_volume>` in addition to the SP grants, OR
+   - Document in `docs/runbooks/service-principals.md` / `catalog-setup.md` that the catalog owner must run one-time grants: `MODIFY ON SCHEMA <metadata_schema>`, `SELECT ON SCHEMA <source_schema>`, `READ VOLUME ON VOLUME <archive_volume>`.
+4. **Update test case `05T_archive_live_create.md`:**
+   - The `SELECT COUNT(*) FROM delta.<ARCHIVE_VOL>/claims/year_2020` step is wrong for this env — the actual archive base is `<ARCHIVE_VOL>/source_data_samples/<table>/year_<yyyy>`, i.e. the archiver adds a schema segment. Either document this as expected (path = `<volume_root>/<schema>/<table>/year_<yyyy>`) or have the runner read the actual path from `schema_templates.archive_base_path`.
+   - Note the `dbfs:/Volumes/...` prefix requirement for `databricks fs ls` against UC volumes (bare `/Volumes/...` gives misleading 404s).
+5. **Revoke the extra grants in higher envs.** In `dev2_archive` the self-grants (`READ_VOLUME`, `SELECT ON source_schema`, `MODIFY ON metadata`) are fine to leave. In stage/prod, revoke these from the human owner and rely solely on the SP identity.
+
+---
+
+
 
 **TL;DR:** Live archive succeeded on attempt 4 after resolving SP permission issues. All 3 tables archived (CREATE mode) across 21 table-year combos. Folder counts match audit log. Source data unchanged (`delete_after_archive = false`).
 

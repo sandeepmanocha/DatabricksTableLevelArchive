@@ -62,6 +62,8 @@ dbutils.widgets.text("source_table", "", "Source table (catalog.schema.table)")
 dbutils.widgets.text("target_catalog", "", "Target catalog")
 dbutils.widgets.text("target_schema", "", "Target schema")
 dbutils.widgets.text("years", "", "Years (comma-separated, e.g. 2021,2022,2023)")
+dbutils.widgets.dropdown("include_live_data", "false", ["true", "false"], "Include live source data in unified view")
+dbutils.widgets.text("unified_view_suffix", "_unified", "Suffix for unified view name")
 
 config_table = dbutils.widgets.get("config_table").strip()
 archive_base_path = dbutils.widgets.get("archive_base_path").strip()
@@ -69,6 +71,8 @@ source_table = dbutils.widgets.get("source_table").strip()
 target_catalog = dbutils.widgets.get("target_catalog").strip()
 target_schema = dbutils.widgets.get("target_schema").strip()
 years_raw = dbutils.widgets.get("years").strip()
+include_live_data = dbutils.widgets.get("include_live_data").strip().lower() == "true"
+unified_view_suffix = dbutils.widgets.get("unified_view_suffix").strip()
 
 # COMMAND ----------
 for label, val in (
@@ -82,6 +86,7 @@ for label, val in (
     if not val:
         raise ValueError(f"Widget {label!r} is required (non-empty).")
 
+years_raw = years_raw.strip('"').strip("'")
 years = [int(y.strip()) for y in years_raw.split(",") if y.strip()]
 base_name = source_table.split(".")[-1].strip()
 available_archive_years = [
@@ -111,6 +116,8 @@ params = {
     "target_schema": target_schema,
     "years": years,
     "available_archive_years": available_archive_years,
+    "include_live_data": include_live_data,
+    "unified_view_suffix": unified_view_suffix,
 }
 
 # COMMAND ----------
@@ -118,16 +125,25 @@ try:
     result = engine.run(params)
 except ArchiveOperationError as exc:
     displayHTML(
-        "<h3>Rehydration failed (LOG-04)</h3>"
+        "<h3>Rehydration failed</h3>"
         f"<p style='color:#b00020'>{html.escape(str(exc))}</p>"
     )
     raise
 
 view_safe = html.escape(result["view_name"]) if result["view_name"] else "(no unified view)"
+restored = ", ".join(str(y) for y in result["restored_years"]) or "none"
+skipped = ", ".join(str(y) for y in result["skipped_years"]) or "none"
 displayHTML(
-    "<h3>Rehydration summary (LOG-04)</h3>"
+    "<h3>Rehydration summary</h3>"
     "<table border='1' cellpadding='6' cellspacing='0' style='border-collapse:collapse'>"
-    f"<tr><th>tables_created</th><td>{int(result['tables_created'])}</td></tr>"
-    f"<tr><th>view_name</th><td><code>{view_safe}</code></td></tr>"
+    f"<tr><th>source_table</th><td><code>{html.escape(source_table)}</code></td></tr>"
+    f"<tr><th>archive_base_path</th><td><code>{html.escape(archive_base_path)}</code></td></tr>"
+    f"<tr><th>target</th><td><code>{html.escape(target_catalog)}.{html.escape(target_schema)}</code></td></tr>"
+    f"<tr><th>include_live_data</th><td>{include_live_data}</td></tr>"
+    f"<tr><th>views_created</th><td>{int(result['tables_created'])}</td></tr>"
+    f"<tr><th>restored_years</th><td>{html.escape(restored)}</td></tr>"
+    f"<tr><th>skipped_years</th><td>{html.escape(skipped)}</td></tr>"
+    f"<tr><th>unified_view</th><td><code>{view_safe}</code></td></tr>"
+    f"<tr><th>status</th><td>{html.escape(result['status'])}</td></tr>"
     "</table>"
 )

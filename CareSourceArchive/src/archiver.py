@@ -7,6 +7,7 @@ from src.conditions import (
     build_exclusion_clause,
     build_individual_condition_sql,
     get_condition_names,
+    normalize_condition,
 )
 from src.config import merge_settings
 from src.exceptions import ArchiveError, ArchiveOperationError, ArchiveVerificationError
@@ -31,27 +32,13 @@ def _extract_year(row: Any, key: str = "yr") -> int:
     return int(row[key])
 
 
-def _normalize_condition(c: Any) -> dict:
-    """Convert a Spark Row or dict condition to a plain dict with canonical keys."""
-    if hasattr(c, "asDict"):
-        d = c.asDict()
-    elif isinstance(c, dict):
-        d = dict(c)
-    else:
-        d = dict(c)
-    if "scope" in d and "type" not in d:
-        d["type"] = d.pop("scope")
-    d.pop("sql", None)
-    return d
-
-
 def _parse_conditions(raw: Any) -> list:
     if raw is None or (isinstance(raw, str) and not str(raw).strip()):
         return []
     if isinstance(raw, str):
         return json.loads(raw)
     if isinstance(raw, list):
-        return [_normalize_condition(c) for c in raw]
+        return [normalize_condition(c) for c in raw]
     return []
 
 
@@ -70,10 +57,7 @@ class ArchiveEngine:
         self._spark = spark
 
     def _set_timezone(self, merged: Mapping[str, Any]) -> None:
-        tz = self._ctx.settings.get("timezone", "UTC")
-        if merged.get("timezone"):
-            tz = merged["timezone"]
-        self._spark.conf.set("spark.sql.session.timeZone", tz)
+        self._spark.conf.set("spark.sql.session.timeZone", merged["timezone"])
 
     def _calculate_eligible_years(
         self,

@@ -1,0 +1,26 @@
+digraph rollback_recovery {
+    rankdir=TB;
+    graph [
+        fontname="Helvetica"
+        fontsize=10
+        bgcolor="#ffffff"
+        fontcolor=black
+    ];
+    node [
+        fontname="Helvetica"
+        fontsize=10
+        shape=box
+        style="rounded,filled"
+        fontcolor=black
+        color="#6f6f6f"
+    ];
+    edge [fontname="Helvetica", fontsize=9, fontcolor=black, color="#555555"];
+
+    A [fillcolor="#EEECE8", label="1. Dry-run first\nsee blast radius"];
+    B [fillcolor="#E4E6EA", label="2. Archive-only mode\ndelete_after_archive=false"];
+    C [fillcolor="#DADEE4", label="3. Verify before delete\ncount match required"];
+    D [fillcolor="#D0D6DD", label="4. Delta time travel\n30-day recovery window"];
+    E [fillcolor="#C6CFD6", label="5. Rehydrate to restore\nrestore to any catalog/schema"];
+
+    A -> B -> C -> D -> E;
+}
