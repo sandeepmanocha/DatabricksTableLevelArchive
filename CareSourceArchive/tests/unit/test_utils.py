@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from src.exceptions import ArchiveConfigError
+from src.exceptions import ArchiveConfigError, ArchiveError
 from src.utils import (
     RunContext,
     archive_folder_exists,
@@ -21,6 +21,7 @@ from src.utils import (
     ensure_table_exists,
     ensure_table_with_setup_message,
     generate_archive_run_id,
+    is_safe_identifier,
     row_to_dict,
     row_value,
     source_fq_from_config,
@@ -32,6 +33,8 @@ from src.utils import (
     sql_int_or_null,
     sql_quote,
     sql_str_or_null,
+    validate_fq_identifier,
+    validate_identifier,
 )
 
 
@@ -129,6 +132,13 @@ class TestRowValue:
     def test_none_row_returns_default(self):
         assert row_value(None, "x") is None
 
+    def test_row_value_returns_default_for_none(self):
+        assert row_value(None, "x", default=7) == 7
+
+    def test_row_value_no_longer_swallows_type_error(self):
+        with pytest.raises(TypeError):
+            row_value(5, "x", default=0)
+
 
 class TestRowToDict:
     def test_dict_passthrough(self):
@@ -179,6 +189,39 @@ def restore_root_logging():
         root.addHandler(h)
 
 
+class TestSafeIdentifierHelpers:
+    def test_is_safe_identifier_accepts_simple_names(self):
+        assert is_safe_identifier("claims")
+        assert is_safe_identifier("_x")
+        assert is_safe_identifier("Col_1")
+
+    def test_is_safe_identifier_rejects_dots_spaces_hyphens_and_quotes_and_empty(self):
+        assert not is_safe_identifier("")
+        assert not is_safe_identifier("a.b")
+        assert not is_safe_identifier("a b")
+        assert not is_safe_identifier("a-b")
+        assert not is_safe_identifier("'x'")
+        assert not is_safe_identifier("9bad")
+
+    def test_validate_identifier_raises_archive_config_error(self):
+        with pytest.raises(ArchiveConfigError, match="field='badfield'"):
+            validate_identifier("bad-name", field="badfield")
+        assert validate_identifier("ok_name", field="badfield") == "ok_name"
+
+    def test_validate_fq_identifier_accepts_one_two_three_parts(self):
+        assert validate_fq_identifier("t") == "t"
+        assert validate_fq_identifier("s.t") == "s.t"
+        assert validate_fq_identifier("c.s.t") == "c.s.t"
+
+    def test_validate_fq_identifier_rejects_empty_parts(self):
+        with pytest.raises(ArchiveConfigError):
+            validate_fq_identifier("")
+        with pytest.raises(ArchiveConfigError):
+            validate_fq_identifier("a..b")
+        with pytest.raises(ArchiveConfigError):
+            validate_fq_identifier("a.b.c.d")
+
+
 class TestConfigureLogging:
     def test_root_info_format_includes_run_id(self, restore_root_logging, capsys):
         root = logging.getLogger()
@@ -192,6 +235,17 @@ class TestConfigureLogging:
         assert "hello" in err
         assert "[run-xyz-001] []" in err
 
+    def test_configure_logging_idempotent(self, restore_root_logging):
+        root = logging.getLogger()
+        root.handlers.clear()
+        configure_logging("run-1")
+        configure_logging("run-1")
+        named = [h for h in root.handlers if getattr(h, "name", None) == "caresource_archive"]
+        assert len(named) == 1
+        configure_logging("run-2")
+        named = [h for h in root.handlers if getattr(h, "name", None) == "caresource_archive"]
+        assert len(named) == 1
+        assert named[0].filters[0].archive_run_id == "run-2"
 
 
 class TestConfigureLoggingTableField:
@@ -241,6 +295,15 @@ class TestSqlHelpers:
         with pytest.raises((ValueError, TypeError)):
             sql_int("not_a_number")
 
+    def test_sql_int_rejects_bool(self):
+        with pytest.raises(TypeError, match="bool"):
+            sql_int(True)
+        with pytest.raises(TypeError, match="bool"):
+            sql_int(False)
+
+    def test_sql_int_truncates_float(self):
+        assert sql_int(3.9) == "3"
+
 
 class TestSourceFqFromConfig:
     def test_builds_fq_name(self):
@@ -278,6 +341,17 @@ class TestEnsureTableWithSetupMessage:
 
 
 class TestSparkCount:
+    def test_spark_count_raises_when_no_rows(self, mock_spark):
+        mock_spark.sql.return_value.first.return_value = None
+        with pytest.raises(ArchiveError, match="no rows"):
+            spark_count(mock_spark, "SELECT 1 AS count WHERE 1=0")
+
+    def test_spark_count_custom_column_name(self, mock_spark):
+        row = MagicMock()
+        row.__getitem__ = MagicMock(return_value=42)
+        mock_spark.sql.return_value.first.return_value = row
+        assert spark_count(mock_spark, "SELECT 1", column_name="row_count") == 42
+
     def test_returns_integer(self, mock_spark):
         row = MagicMock()
         row.__getitem__ = MagicMock(return_value=42)
@@ -366,3 +440,14 @@ class TestSqlDateOrNull:
 
     def test_single_digit_month_and_day_zero_padded(self):
         assert sql_date_or_null(date(2021, 1, 5)) == "DATE '2021-01-05'"
+
+    def test_sql_date_or_null_rejects_non_date(self):
+        with pytest.raises(TypeError):
+            sql_date_or_null("2025-01-01")
+        with pytest.raises(TypeError):
+            sql_date_or_null(42)
+
+    def test_sql_date_or_null_accepts_date_and_datetime_and_none(self):
+        assert sql_date_or_null(None) == "NULL"
+        assert sql_date_or_null(date(2025, 1, 1)) == "DATE '2025-01-01'"
+        assert sql_date_or_null(datetime(2025, 1, 1, 15, 30, 0)) == "DATE '2025-01-01'"

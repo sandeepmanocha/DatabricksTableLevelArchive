@@ -237,3 +237,65 @@ def test_default_unified_view_excludes_live_data(rehydration_engine):
     assert "SELECT * FROM live_cat.live_sch.claims" not in unified_sql
     assert "SELECT * FROM tgt_cat.tgt_sch.claims_year_2020" in unified_sql
     assert result["view_name"] == "tgt_cat.tgt_sch.claims_unified"
+
+
+def test_unified_view_rejects_schema_mismatch(rehydration_engine):
+    eng, _audit, spark = rehydration_engine
+
+    describe_calls = []
+
+    def side_effect(sql):
+        qs = sql.strip()
+        if qs.upper().startswith("DESCRIBE TABLE"):
+            describe_calls.append(sql)
+            m = MagicMock()
+            if "live_cat.live_sch.claims" in sql:
+                m.collect.return_value = [
+                    {"col_name": "id"},
+                    {"col_name": "name"},
+                ]
+            else:
+                m.collect.return_value = [
+                    {"col_name": "name"},
+                    {"col_name": "id"},
+                ]
+            return m
+        return MagicMock()
+
+    spark.sql.side_effect = side_effect
+    with pytest.raises(ArchiveOperationError) as exc:
+        eng.run(
+            _params(
+                years=[2020],
+                available_archive_years=[2020],
+                include_live_data=True,
+            )
+        )
+    assert exc.value.operation == "rehydrate_unified_view"
+    assert exc.value.reason == "schema_mismatch"
+
+
+def test_unified_view_accepts_matching_schemas(rehydration_engine):
+    eng, _audit, spark = rehydration_engine
+    cols = [{"col_name": "id"}, {"col_name": "name"}]
+
+    def side_effect(sql):
+        qs = sql.strip()
+        if qs.upper().startswith("DESCRIBE TABLE"):
+            m = MagicMock()
+            m.collect.return_value = list(cols)
+            return m
+        return MagicMock()
+
+    spark.sql.side_effect = side_effect
+    eng.run(
+        _params(
+            years=[2020, 2021],
+            available_archive_years=[2020, 2021],
+        )
+    )
+    sqls = [c[0][0] for c in spark.sql.call_args_list]
+    unified_sql = next(s for s in sqls if "unified" in s)
+    assert "UNION ALL" in unified_sql
+    assert "claims_year_2020" in unified_sql
+    assert "claims_year_2021" in unified_sql

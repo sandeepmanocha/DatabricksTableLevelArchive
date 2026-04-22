@@ -1,10 +1,12 @@
 import pytest
 
+from src.exceptions import ArchiveConfigError
 from src.conditions import (
     build_exclusion_clause,
     build_individual_condition_sql,
     get_condition_names,
 )
+from src.utils import sql_quote
 
 
 class TestSameTableOperators:
@@ -136,3 +138,62 @@ class TestBuildIndividualConditionSql:
         sql = build_individual_condition_sql(c, "c", "s", "tbl")
         assert sql == "tbl.z = 'Q'"
         assert not sql.strip().upper().startswith("NOT")
+
+
+class TestSqlQuotingAndIntValidation:
+    def test_equals_escapes_apostrophe(self):
+        c = {
+            "name": "n",
+            "type": "same_table",
+            "column": "name",
+            "operator": "equals",
+            "value": "O'Brien",
+        }
+        sql = build_individual_condition_sql(c, "c", "s", "t")
+        assert sql == "t.name = 'O''Brien'"
+
+    def test_equals_quotes_injection_attempt(self):
+        payload = "1; DROP TABLE --"
+        c = {
+            "name": "n",
+            "type": "same_table",
+            "column": "name",
+            "operator": "equals",
+            "value": payload,
+        }
+        sql = build_individual_condition_sql(c, "c", "s", "t")
+        assert sql.startswith("t.name = '")
+        assert sql == f"t.name = {sql_quote(payload)}"
+
+    def test_within_years_rejects_non_numeric_string(self):
+        c = {
+            "name": "n",
+            "type": "same_table",
+            "column": "d",
+            "operator": "within_years",
+            "value": "seven",
+        }
+        with pytest.raises(ArchiveConfigError, match="field='value'"):
+            build_individual_condition_sql(c, "c", "s", "a")
+
+    def test_within_years_rejects_bool(self):
+        c = {
+            "name": "n",
+            "type": "same_table",
+            "column": "d",
+            "operator": "within_years",
+            "value": True,
+        }
+        with pytest.raises(ArchiveConfigError, match="field='value'"):
+            build_individual_condition_sql(c, "c", "s", "a")
+
+    def test_in_with_list_quotes_each_value(self):
+        c = {
+            "name": "n",
+            "type": "same_table",
+            "column": "ref",
+            "operator": "in",
+            "value": ["A", "O'Brien"],
+        }
+        sql = build_individual_condition_sql(c, "c", "s", "t1")
+        assert sql == "t1.ref IN ('A', 'O''Brien')"

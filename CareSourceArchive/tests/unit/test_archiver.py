@@ -1896,3 +1896,248 @@ def test_dry08_error_predicted_for_orphan_folder():
     assert yr_data["would_archive"] == 0
     assert "no successful archive is recorded" in (yr_data.get("error_message") or "")
 
+
+def test_delete_blocked_when_not_owned():
+    eng, _, audit, spark = _make_engine()
+    audit.get_last_run_state.return_value = ("ARCHIVED", date(2020, 1, 1), 100)
+    audit.check_concurrent.return_value = (False, False, None, None)
+    audit.is_archived_by_run.return_value = False
+
+    def sql_side_effect(q):
+        m = MagicMock()
+        qs = q.replace("\n", " ")
+        if "YEAR(current_date())" in qs:
+            fr = MagicMock()
+            fr.__getitem__ = lambda self, k: 2026 if k == "y" else None
+            fr.__contains__ = lambda self, k: k == "y"
+            m.first.return_value = fr
+            return m
+        if "DISTINCT YEAR" in q:
+            m.collect.return_value = [MagicMock(yr=2020)]
+            return m
+        if "FROM delta.`" in qs and "COUNT" in qs:
+            m.first.return_value = {"count": 100}
+            return m
+        if "archive_audit_log" in q and "record_count" in qs and "ARCHIVED" in q:
+            m.collect.return_value = [{"record_count": 100}]
+            return m
+        if "COUNT(*)" in qs and "src_cat.src_sch.claims" in qs and " src" in qs:
+            m.first.return_value = {"count": 100}
+            return m
+        if q.strip().upper().startswith("DELETE"):
+            m.first.return_value = {"count": 0}
+            return m
+        m.first.return_value = {"count": 0}
+        m.collect.return_value = []
+        return m
+
+    spark.sql.side_effect = sql_side_effect
+    spark.conf = MagicMock()
+    dbutils = MagicMock()
+    with patch("src.archiver.archive_folder_exists", return_value=True):
+        with pytest.raises(ArchiveOperationError) as ei:
+            eng.run(_table_config(delete_after_archive=True), dry_run=False, dbutils=dbutils)
+    assert ei.value.reason == "ownership"
+    assert "does not own" in str(ei.value).lower()
+    delete_sqls = [
+        c[0][0] for c in spark.sql.call_args_list if c[0][0].strip().upper().startswith("DELETE")
+    ]
+    assert not delete_sqls
+    audit.is_archived_by_run.assert_called()
+
+
+def test_delete_sql_failure_maps_to_operation_error():
+    eng, _, _, spark = _make_engine()
+    spark.sql.side_effect = RuntimeError("delete exploded")
+
+    with pytest.raises(ArchiveOperationError) as ei:
+        eng._delete_archived(_table_config(), 2020, "1=1")
+    assert ei.value.operation == "delete"
+    assert ei.value.reason == "operation_failure"
+
+
+def test_validate_archives_reports_missing():
+    eng, _, _, spark = _make_engine()
+
+    def sql_side_effect(q):
+        m = MagicMock()
+        if "YEAR(current_date())" in q.replace("\n", " "):
+            fr = MagicMock()
+            fr.__getitem__ = lambda self, k: 2020 if k == "y" else None
+            fr.__contains__ = lambda self, k: k == "y"
+            m.first.return_value = fr
+            return m
+        if "DISTINCT YEAR" in q:
+            m.collect.return_value = [MagicMock(yr=2015)]
+            return m
+        return m
+
+    spark.sql.side_effect = sql_side_effect
+    dbutils = MagicMock()
+    with patch("src.archiver.archive_folder_exists", return_value=False):
+        out = eng.validate_archives([_table_config(retention_years=3)], dbutils)
+    assert out["valid"] is False
+    assert out["missing"]
+    assert any(m["year"] == 2015 for m in out["missing"])
+
+
+def test_silent_year_drop_is_hard_failure():
+    eng, _, _, spark = _make_engine()
+
+    def sql_side_effect(q):
+        m = MagicMock()
+        if "YEAR(current_date())" in q.replace("\n", " "):
+            fr = MagicMock()
+            fr.__getitem__ = lambda self, k: 2020 if k == "y" else None
+            fr.__contains__ = lambda self, k: k == "y"
+            m.first.return_value = fr
+            return m
+        if "DISTINCT YEAR" in q:
+            m.collect.return_value = [{"yr": "not_a_year"}]
+            return m
+        return m
+
+    spark.sql.side_effect = sql_side_effect
+    tc = _table_config(retention_years=5)
+    with pytest.raises(ArchiveOperationError) as ei:
+        eng._calculate_eligible_years(tc, 5)
+    assert ei.value.operation == "calculate_eligible_years"
+
+
+def test_resume_delete_raises_on_source_drift():
+    eng, _, audit, spark = _make_engine()
+    audit.get_last_run_state.return_value = ("ARCHIVED", date(2020, 1, 1), 100)
+    audit.check_concurrent.return_value = (False, False, None, None)
+
+    def sql_side_effect(q):
+        m = MagicMock()
+        qs = q.replace("\n", " ")
+        if "YEAR(current_date())" in qs:
+            fr = MagicMock()
+            fr.__getitem__ = lambda self, k: 2026 if k == "y" else None
+            fr.__contains__ = lambda self, k: k == "y"
+            m.first.return_value = fr
+            return m
+        if "DISTINCT YEAR" in q:
+            m.collect.return_value = [MagicMock(yr=2020)]
+            return m
+        if "FROM delta.`" in qs and "COUNT" in qs:
+            m.first.return_value = {"count": 100}
+            return m
+        if "archive_audit_log" in q and "record_count" in qs and "ARCHIVED" in q:
+            m.collect.return_value = [{"record_count": 100}]
+            return m
+        if (
+            "COUNT(*)" in qs
+            and "src_cat.src_sch.claims" in qs
+            and " src" in qs
+            and "NOT (src.status" in qs
+        ):
+            m.first.return_value = {"count": 77}
+            return m
+        if q.strip().upper().startswith("DELETE"):
+            return m
+        m.first.return_value = {"count": 0}
+        m.collect.return_value = []
+        return m
+
+    spark.sql.side_effect = sql_side_effect
+    spark.conf = MagicMock()
+    dbutils = MagicMock()
+    with patch("src.archiver.archive_folder_exists", return_value=True):
+        with pytest.raises(ArchiveVerificationError) as ei:
+            eng.run(_table_config(delete_after_archive=True), dry_run=False, dbutils=dbutils)
+    assert ei.value.reason == "source_drift"
+    audit.log_verify_failed.assert_called_once()
+
+
+def test_skip_vs_error_when_watermark_none():
+    eng, _, audit, spark = _make_engine()
+    audit.get_last_run_state.return_value = ("ARCHIVED", None, 100)
+
+    def sql_side_effect(q):
+        m = MagicMock()
+        qs = q.replace("\n", " ")
+        if "COUNT(*)" in qs and "src_cat.src_sch.claims" in qs and " src" not in qs:
+            m.first.return_value = {"count": 100}
+            return m
+        if "src_cat.src_sch.claims src" in qs and "COUNT" in qs:
+            m.first.return_value = {"count": 0}
+            return m
+        if "CAST(MAX(" in qs or ("MAX(claim_date)" in qs and "delta`" in qs):
+            m.first.return_value = {"wm": None}
+            return m
+        m.first.return_value = {"count": 0}
+        return m
+
+    spark.sql.side_effect = sql_side_effect
+    tc = _table_config(delete_after_archive=False)
+    res_true = eng._resolve_year_action(tc, 2020, "1=1", folder_exists=True)
+    assert res_true["action"] == "ERROR"
+    assert res_true["error_reason"] == "cannot_determine_incremental_position"
+
+    spark.sql.side_effect = None
+    spark.sql.return_value = MagicMock()
+    spark.sql.return_value.first.return_value = {"count": 50}
+    res_false = eng._resolve_year_action(tc, 2020, "1=1", folder_exists=False)
+    assert res_false["action"] == "CREATE"
+
+
+def test_verify_failed_refuses_append_on_retry():
+    eng, _, audit, spark = _make_engine()
+    audit.get_last_run_state.return_value = ("ARCHIVED", date(2018, 6, 15), 500)
+    audit.check_concurrent.return_value = (False, False, None, None)
+
+    def sql_side_effect(q):
+        m = MagicMock()
+        qs = q.replace("\n", " ")
+        if "VERIFY_FAILED" in qs and "LIMIT 1" in qs:
+            m.collect.return_value = [MagicMock()]
+            return m
+        if "YEAR(current_date())" in qs:
+            fr = MagicMock()
+            fr.__getitem__ = lambda self, k: 2026 if k == "y" else None
+            fr.__contains__ = lambda self, k: k == "y"
+            m.first.return_value = fr
+            return m
+        if "DISTINCT YEAR" in q:
+            m.collect.return_value = [MagicMock(yr=2018)]
+            return m
+        if "src_cat.src_sch.claims src" in qs and "COUNT" in qs:
+            m.first.return_value = {"count": 3}
+            return m
+        if "COUNT(" in qs and "src_cat.src_sch.claims" in qs and "delta" not in qs and "archive_audit" not in qs:
+            if " IS NULL" in qs:
+                m.first.return_value = {"count": 0}
+                return m
+            m.first.return_value = {"count": 800}
+            return m
+        if "INSERT INTO" in q and "delta.`" in q:
+            m.first.return_value = {"count": 3}
+            return m
+        if "COUNT(" in q and "delta" in q:
+            m.first.return_value = {"count": 3}
+            return m
+        if "CAST(MAX(" in qs or ("MAX(claim_date)" in qs and "delta`" in qs):
+            m.first.return_value = {"wm": date(2018, 12, 1)}
+            return m
+        if "archive_audit_log" in q and "ARCHIVED" in q and "run-a" in q:
+            m.collect.return_value = [MagicMock()]
+            return m
+        if q.strip().upper().startswith("DELETE"):
+            return m
+        m.first.return_value = {"count": 0}
+        m.collect.return_value = []
+        return m
+
+    spark.sql.side_effect = sql_side_effect
+    spark.conf = MagicMock()
+    dbutils = MagicMock()
+    with patch("src.archiver.archive_folder_exists", return_value=True):
+        with pytest.raises(ArchiveOperationError) as ei:
+            eng.run(_table_config(delete_after_archive=False), dry_run=False, dbutils=dbutils)
+    assert ei.value.reason == "verify_failed_requires_reconcile"
+    assert "verify-failed.md" in str(ei.value)
+    insert_sqls = [c[0][0] for c in spark.sql.call_args_list if "INSERT INTO" in c[0][0] and "delta.`" in c[0][0]]
+    assert not insert_sqls
+

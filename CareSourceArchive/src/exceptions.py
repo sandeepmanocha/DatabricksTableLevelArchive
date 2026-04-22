@@ -1,3 +1,13 @@
+"""
+Exception types for the archive pipeline.
+
+Defines a small hierarchy of errors raised by the scanner, archiver,
+rehydrator, and audit layers, along with standardized diagnostic messages
+that point operators at the right runbook or audit query when something
+goes wrong.
+"""
+
+
 class ArchiveError(Exception):
 
     _DIAGNOSTIC_TEMPLATES = {
@@ -8,7 +18,19 @@ class ArchiveError(Exception):
                 "Re-run after that job completes."
             ),
         },
+        "VERIFY_FAILED": {
+            "source_drift": (
+                "{table} year {year}: Archive count {archive_count} does not match "
+                "fresh source count {source_count}. Run has halted to prevent data loss. "
+                "See docs/runbooks/verify-failed.md."
+            ),
+        },
         "FAILED": {
+            "cannot_determine_incremental_position": (
+                "{table} year {year}: Cannot determine incremental append position — "
+                "no watermark in audit and archive folder has no resolvable MAX watermark. "
+                "Inspect archive delta and audit rows before retrying."
+            ),
             "ownership": (
                 "{table} year {year}: Delete blocked — this run ({archive_run_id}) "
                 "does not own the ARCHIVED row. "
@@ -52,6 +74,13 @@ class ArchiveError(Exception):
         "cannot be found",
     )
 
+    _PERMISSION_FRAGMENTS = (
+        "PERMISSION_DENIED",
+        "ACCESS_DENIED",
+        "permission denied",
+        "403",
+    )
+
     @staticmethod
     def is_not_found(exc: Exception) -> bool:
         """True when *exc* signals a missing path rather than an access or infra error.
@@ -62,10 +91,17 @@ class ArchiveError(Exception):
         that appear across classic and serverless runtimes.
         """
         msg = str(exc)
+        if any(f in msg for f in ArchiveError._PERMISSION_FRAGMENTS):
+            return False
         return any(f in msg for f in ArchiveError._NOT_FOUND_FRAGMENTS)
 
     @staticmethod
-    def diagnostic_message(status, reason, **kwargs):
+    def diagnostic_message(status, reason, **kwargs) -> str:
+        """
+        Description: Build a formatted diagnostic string for a status and reason.
+        Parameters: status: archive status key; reason: diagnostic reason key; kwargs: template format values
+        Return: Formatted message string, or a fallback when no template matches.
+        """
         reasons = ArchiveError._DIAGNOSTIC_TEMPLATES.get(status, {})
         template = reasons.get(reason)
         if template:
@@ -77,7 +113,12 @@ class ArchiveError(Exception):
 
 
 class ArchiveConfigError(ArchiveError):
-    def __init__(self, msg=None, *, field=None, table_id=None, source=None):
+    def __init__(self, msg=None, *, field=None, table_id=None, source=None) -> None:
+        """
+        Description: Initialize a configuration error with a custom or built message.
+        Parameters: msg: optional full message; field: config field name; table_id: table identifier; source: config source label
+        Return: None
+        """
         if msg is not None:
             super().__init__(msg)
             return
@@ -90,7 +131,12 @@ class ArchiveConfigError(ArchiveError):
 
 
 class ArchiveOperationError(ArchiveError):
-    def __init__(self, msg, *, table=None, year=None, operation=None, reason=None):
+    def __init__(self, msg, *, table=None, year=None, operation=None, reason=None) -> None:
+        """
+        Description: Initialize an archive operation failure with context attributes.
+        Parameters: msg: error message; table: table name; year: archive year; operation: operation name; reason: failure reason
+        Return: None
+        """
         super().__init__(msg)
         self.table = table
         self.year = year
@@ -99,7 +145,12 @@ class ArchiveOperationError(ArchiveError):
 
 
 class ArchiveVerificationError(ArchiveError):
-    def __init__(self, msg, *, table=None, year=None, expected=None, actual=None, reason=None):
+    def __init__(self, msg, *, table=None, year=None, expected=None, actual=None, reason=None) -> None:
+        """
+        Description: Initialize a verification mismatch error with expected and actual values.
+        Parameters: msg: error message; table: table name; year: archive year; expected: expected value; actual: actual value; reason: failure reason
+        Return: None
+        """
         super().__init__(msg)
         self.table = table
         self.year = year

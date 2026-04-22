@@ -261,11 +261,12 @@ class TestDiagnosticMessage:
 
     def test_template_keys_match_expected_set(self):
         templates = ArchiveError._DIAGNOSTIC_TEMPLATES
-        assert set(templates.keys()) == {"SKIPPED_CONCURRENT", "FAILED"}
+        assert set(templates.keys()) == {"SKIPPED_CONCURRENT", "FAILED", "VERIFY_FAILED"}
         assert set(templates["SKIPPED_CONCURRENT"].keys()) == {"concurrent_skip"}
+        assert set(templates["VERIFY_FAILED"].keys()) == {"source_drift"}
         assert set(templates["FAILED"].keys()) == {
             "ownership", "missing_folder_after_delete", "orphan_folder",
-            "count_mismatch", "operation_failure",
+            "count_mismatch", "operation_failure", "cannot_determine_incremental_position",
         }
 
 

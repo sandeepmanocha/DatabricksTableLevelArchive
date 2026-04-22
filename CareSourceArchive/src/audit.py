@@ -1,10 +1,19 @@
+"""
+Audit logging for archive and rehydration operations.
+
+Writes a durable, append-only trail of every run to the audit Delta table:
+what started, what was archived or rehydrated, counts, statuses, and any
+failures. Other modules use this history to resume interrupted runs, detect
+concurrent activity, and report operational state.
+"""
+
 import json
 import logging
 import uuid
 import datetime as datetime_module
 from typing import Any, Mapping, Optional
 
-from src.exceptions import ArchiveConfigError
+from src.exceptions import ArchiveConfigError, ArchiveError
 from src.utils import (
     build_insert_values_sql,
     ensure_table_with_setup_message,
@@ -21,6 +30,11 @@ logger = logging.getLogger("caresource_archive.audit")
 
 
 def _utc_now() -> datetime_module.datetime:
+    """
+    Description: Returns the current time in UTC.
+    Parameters: none
+    Return: A timezone-aware UTC datetime.
+    """
     return datetime_module.datetime.now(datetime_module.timezone.utc)
 
 ALLOWED_ARCHIVE_STATUSES = frozenset(
@@ -30,6 +44,7 @@ ALLOWED_ARCHIVE_STATUSES = frozenset(
         "ARCHIVED",
         "ARCHIVED_AND_DELETED",
         "FAILED",
+        "VERIFY_FAILED",
         "SKIPPED",
         "SKIPPED_CONCURRENT",
         "NO_DATA",
@@ -89,15 +104,30 @@ REHYDRATION_AUDIT_COLUMNS = [
 
 
 def _audit_table_fq(audit_catalog: str, audit_schema: str, name: str) -> str:
+    """
+    Description: Builds a three-part backtick-quoted table identifier for SQL.
+    Parameters: audit_catalog: Unity catalog name; audit_schema: schema name; name: table name
+    Return: Fully qualified table name string for Spark SQL.
+    """
     return f"`{audit_catalog}`.`{audit_schema}`.`{name}`"
 
 
 def _sql_in_string_set(values: frozenset[str]) -> str:
+    """
+    Description: Formats a set of strings as comma-separated quoted literals for SQL IN lists.
+    Parameters: values: string values to quote and sort
+    Return: Comma-separated quoted SQL string literals.
+    """
     return ", ".join(sql_quote(v) for v in sorted(values))
 
 
 class AuditLogger:
-    def __init__(self, ctx, spark):
+    def __init__(self, ctx, spark) -> None:
+        """
+        Description: Loads audit catalog and schema from context and stores Spark and context references.
+        Parameters: ctx: run context with settings and job metadata; spark: active Spark session
+        Return: None
+        """
         settings = ctx.settings
         cat = settings.get("audit_catalog")
         sch = settings.get("audit_schema")
@@ -115,9 +145,19 @@ class AuditLogger:
         self._ctx = ctx
 
     def _archive_table(self) -> str:
+        """
+        Description: Returns the fully qualified archive audit log table name.
+        Parameters: none
+        Return: Three-part SQL identifier for archive_audit_log.
+        """
         return _audit_table_fq(self.audit_catalog, self.audit_schema, "archive_audit_log")
 
     def _rehydration_table(self) -> str:
+        """
+        Description: Returns the fully qualified rehydration audit log table name.
+        Parameters: none
+        Return: Three-part SQL identifier for rehydration_audit_log.
+        """
         return _audit_table_fq(
             self.audit_catalog,
             self.audit_schema,
@@ -125,6 +165,11 @@ class AuditLogger:
         )
 
     def _job_context_values(self) -> list[str]:
+        """
+        Description: Builds SQL fragments for archived_by, workspace, job IDs, and created_at columns.
+        Parameters: none
+        Return: List of SQL expression strings for trailing audit columns.
+        """
         jc = self._ctx.job_context
         return [
             sql_expr("current_user()"),
@@ -136,11 +181,21 @@ class AuditLogger:
         ]
 
     def ensure_archive_audit_table(self) -> None:
+        """
+        Description: Creates the archive audit Delta table if it does not already exist.
+        Parameters: none
+        Return: None
+        """
         ensure_table_with_setup_message(
             self._spark, self._archive_table(), label="Archive audit table"
         )
 
     def ensure_rehydration_audit_table(self) -> None:
+        """
+        Description: Creates the rehydration audit Delta table if it does not already exist.
+        Parameters: none
+        Return: None
+        """
         ensure_table_with_setup_message(
             self._spark, self._rehydration_table(), label="Rehydration audit table"
         )
@@ -158,6 +213,11 @@ class AuditLogger:
         source_year_count: Optional[int] = None,
         archive_mode: Optional[str] = None,
     ) -> None:
+        """
+        Description: Inserts one archive audit row for a table-year with counts and optional metadata.
+        Parameters: table: table name; year: partition year; status: allowed archive status; record_count: row count; conditions_applied: optional JSON or summary; null_date_count: optional null-date count; error_message: optional error text; watermark_value: optional watermark date; source_year_count: optional source count; archive_mode: optional mode label
+        Return: None
+        """
         if status not in ALLOWED_ARCHIVE_STATUSES:
             raise ArchiveConfigError(msg=f"Invalid archive audit status: {status!r}")
         audit_id = str(uuid.uuid4())
@@ -179,6 +239,35 @@ class AuditLogger:
         sql = build_insert_values_sql(self._archive_table(), ARCHIVE_AUDIT_COLUMNS, values)
         self._spark.sql(sql)
 
+    def log_verify_failed(
+        self,
+        table: str,
+        year: int,
+        archive_count: int,
+        source_count: int,
+    ) -> None:
+        """
+        Description: Logs VERIFY_FAILED using a diagnostic message built from archive and source counts.
+        Parameters: table: table name; year: partition year; archive_count: rows in archive; source_count: rows in source
+        Return: None
+        """
+        msg = ArchiveError.diagnostic_message(
+            "VERIFY_FAILED",
+            "source_drift",
+            table=table,
+            year=year,
+            archive_count=archive_count,
+            source_count=source_count,
+        )
+        self.log_archive(
+            table=table,
+            year=year,
+            status="VERIFY_FAILED",
+            record_count=int(archive_count),
+            error_message=msg,
+            source_year_count=int(source_count),
+        )
+
     def log_rehydrate(
         self,
         archive_path: str,
@@ -190,6 +279,11 @@ class AuditLogger:
         status: str,
         error_message: Optional[str] = None,
     ) -> None:
+        """
+        Description: Inserts one rehydration audit row for a restore operation.
+        Parameters: archive_path: archived data path; source: source table; target_catalog: destination catalog; target_schema: destination schema; years: years covered; tables_created: table count created; status: allowed rehydration status; error_message: optional error text
+        Return: None
+        """
         if status not in ALLOWED_REHYDRATION_STATUSES:
             raise ArchiveConfigError(msg=f"Invalid rehydration audit status: {status!r}")
         audit_id = str(uuid.uuid4())
@@ -221,6 +315,11 @@ class AuditLogger:
         null_date_count: Optional[int] = None,
         action: Optional[str] = None,
     ) -> None:
+        """
+        Description: Logs a DRY_RUN row with JSON-encoded eligibility and per-condition counts.
+        Parameters: table: table name; year: partition year; total_eligible: eligible rows; would_archive: rows that would archive; per_condition_counts: counts map by condition; null_date_count: optional null-date count; action: optional action label
+        Return: None
+        """
         payload = {
             "action": action,
             "per_condition_counts": dict(per_condition_counts),
@@ -239,6 +338,11 @@ class AuditLogger:
         )
 
     def check_resume_state(self, table_config: Mapping[str, Any], year: int) -> Optional[str]:
+        """
+        Description: Returns the latest archive status for resume decisions, if a row exists.
+        Parameters: table_config: mapping containing table_id; year: partition year
+        Return: Latest status string, or None when no audit history.
+        """
         result = self.get_latest_status(table_config["table_id"], year)
         return result[0] if result else None
 
@@ -255,6 +359,11 @@ class AuditLogger:
         return len(rows) > 0
 
     def get_last_run_state(self, table: str, year: int) -> tuple:
+        """
+        Description: Fetches the most recent successful archive row for watermark and source counts.
+        Parameters: table: table name; year: partition year
+        Return: Tuple of status, watermark_value, and source_year_count, or three Nones if none.
+        """
         success_sql = _sql_in_string_set(ARCHIVE_SUCCESS_STATUSES)
         sql = (
             f"SELECT status, watermark_value, source_year_count "
@@ -273,6 +382,11 @@ class AuditLogger:
         return (status, wm, int(sc) if sc is not None else None)
 
     def get_latest_status(self, table: str, year: int) -> Optional[tuple]:
+        """
+        Description: Returns the newest archive audit status and run id for a table-year.
+        Parameters: table: table name; year: partition year
+        Return: Tuple of status and archive_run_id, or None when no rows.
+        """
         sql = (
             f"SELECT status, archive_run_id "
             f"FROM {self._archive_table()} "
@@ -292,6 +406,11 @@ class AuditLogger:
         archive_run_id: str,
         stale_threshold_hours: float = 4,
     ) -> tuple:
+        """
+        Description: Detects other runs still in STARTED without a terminal row and whether they are stale.
+        Parameters: table: table name; year: partition year; archive_run_id: this run's id; stale_threshold_hours: hours before treating foreign STARTED as stale
+        Return: Tuple of concurrent flag, stale flag, foreign run id, and age in hours.
+        """
         audit_tbl = self._archive_table()
         terminal_statuses_sql = _sql_in_string_set(ARCHIVE_TERMINAL_STATUSES)
         sql = f"""SELECT s.archive_run_id, s.created_at FROM {audit_tbl} s

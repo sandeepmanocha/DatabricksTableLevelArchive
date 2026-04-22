@@ -1,3 +1,12 @@
+"""
+Rehydration engine — restores archived data back to queryable form.
+
+Reads previously archived year-partitioned Delta folders and materializes
+them as tables (or views) in a target schema so users can query historical
+data on demand. Validates schema compatibility against the current source
+and records each rehydration in the audit log.
+"""
+
 import json
 import logging
 
@@ -7,17 +16,44 @@ from src.utils import build_archive_path, create_schema_if_not_exists
 LOGGER = logging.getLogger("caresource_archive.rehydrator")
 
 
+def _describe_columns(spark, fq) -> list[str]:
+    """Return ordered column names from DESCRIBE TABLE, stopping at metadata sections."""
+    rows = spark.sql(f"DESCRIBE TABLE {fq}").collect()
+    names = []
+    for row in rows:
+        col_name = row["col_name"]
+        if col_name is None or col_name == "" or str(col_name).startswith("#"):
+            break
+        names.append(col_name)
+    return names
+
+
 class RehydrationEngine:
-    def __init__(self, ctx, audit, spark):
+    def __init__(self, ctx, audit, spark) -> None:
+        """
+        Description: Store runtime context, audit helper, and Spark session on the engine.
+        Parameters: ctx: runtime context; audit: audit logger; spark: Spark session
+        Return: None
+        """
         self._ctx = ctx
         self._audit = audit
         self._spark = spark
 
-    def _source_base_name(self, source_table):
+    def _source_base_name(self, source_table) -> str:
+        """
+        Description: Return the last dot-separated segment of the source table identifier.
+        Parameters: source_table: table name string, possibly catalog.schema.table
+        Return: Base table name without leading catalog/schema segments.
+        """
         parts = source_table.strip().split(".")
         return parts[-1] if parts else source_table.strip()
 
-    def _create_archive_view(self, source_table, year, fq_view, loc_path):
+    def _create_archive_view(self, source_table, year, fq_view, loc_path) -> None:
+        """
+        Description: Create or replace a view over one year of archived Delta data.
+        Parameters: source_table: source table for diagnostics; year: archive year; fq_view: fully qualified view name; loc_path: Delta storage path
+        Return: None
+        """
         view_sql = (
             f"CREATE OR REPLACE VIEW {fq_view} AS SELECT * FROM delta.`{loc_path}`"
         )
@@ -40,7 +76,12 @@ class RehydrationEngine:
                 reason="view_create_failed",
             ) from exc
 
-    def run(self, params):
+    def run(self, params) -> dict:
+        """
+        Description: Restore requested archive years into per-year views, optional unified view, and audit log.
+        Parameters: params: dict of paths, table names, years, and rehydration flags
+        Return: Dict with tables_created, view_name, status, restored_years, and skipped_years
+        """
         archive_base_path = ""
         source_table = ""
         target_catalog = ""
@@ -126,6 +167,28 @@ class RehydrationEngine:
                 )
 
             if create_unified_view:
+                participant_fqs = []
+                if include_live_data:
+                    participant_fqs.append(source_table)
+                for y in created_years:
+                    participant_fqs.append(
+                        f"{target_catalog}.{target_schema}.{prefixed_base}_year_{y}"
+                    )
+                if len(participant_fqs) > 1:
+                    first_fq = participant_fqs[0]
+                    expected = _describe_columns(self._spark, first_fq)
+                    for fq in participant_fqs[1:]:
+                        actual = _describe_columns(self._spark, fq)
+                        if actual != expected:
+                            raise ArchiveOperationError(
+                                msg=(
+                                    f"rehydrate schema mismatch: {fq} columns {actual} "
+                                    f"differ from {first_fq} columns {expected}"
+                                ),
+                                table=fq,
+                                operation="rehydrate_unified_view",
+                                reason="schema_mismatch",
+                            )
                 select_parts = []
                 if include_live_data:
                     select_parts.append(f"SELECT * FROM {source_table}")

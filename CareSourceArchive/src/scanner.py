@@ -1,3 +1,12 @@
+"""
+Schema scanner — discovers archivable tables.
+
+Walks a source schema using the configured templates, matches each table's
+watermark column, filters out tables that are too small to be worth
+archiving, and publishes the resulting per-table configuration to the
+`table_configs` Delta table that drives the archiver.
+"""
+
 import json
 import logging
 import re
@@ -18,6 +27,7 @@ from src.utils import (
     sql_int_or_null,
     sql_quote,
     sql_str_or_null,
+    validate_identifier,
 )
 
 LOGGER = logging.getLogger("caresource_archive.scanner")
@@ -25,14 +35,24 @@ LOGGER = logging.getLogger("caresource_archive.scanner")
 _GB = 1024**3
 
 
-def scan_schema(spark, template):
+def scan_schema(spark, template) -> list[str]:
+    """
+    Description: Lists table names in the template's source catalog and schema.
+    Parameters: spark: Spark session; template: dict with source_catalog and source_schema
+    Return: List of table name strings
+    """
     cat = template["source_catalog"]
     sch = template["source_schema"]
     q = f"SHOW TABLES IN {cat}.{sch}"
     return [str(n) for n in collect_column(spark, q, "tableName") if n is not None]
 
 
-def match_watermark_column(table_columns, patterns):
+def match_watermark_column(table_columns, patterns) -> tuple[str | None, str | None, list[str], str]:
+    """
+    Description: Resolves a watermark column using exact names or regex patterns in order.
+    Parameters: table_columns: list of column names; patterns: watermark patterns to try
+    Return: Tuple of matched column or None, pattern, matched columns list, status string
+    """
     for pattern in patterns:
         exact = [c for c in table_columns if c == pattern]
         if len(exact) == 1:
@@ -53,7 +73,12 @@ def match_watermark_column(table_columns, patterns):
     return None, None, [], "unmatched"
 
 
-def _scanner_table_config(template, table_name, **overrides):
+def _scanner_table_config(template, table_name, **overrides) -> dict:
+    """
+    Description: Builds a base per-table scanner config dict and applies optional overrides.
+    Parameters: template: schema template dict; table_name: source table name; overrides: optional field overrides
+    Return: Dict table configuration for staging or merge
+    """
     cat = template["source_catalog"]
     sch = template["source_schema"]
     base = {
@@ -74,7 +99,12 @@ def _scanner_table_config(template, table_name, **overrides):
     return base
 
 
-def generate_table_config(template, table_name, matched_column):
+def generate_table_config(template, table_name, matched_column) -> dict:
+    """
+    Description: Builds an active table config with the chosen watermark column.
+    Parameters: template: schema template dict; table_name: source table name; matched_column: resolved watermark column
+    Return: Dict table configuration marked active
+    """
     return _scanner_table_config(
         template,
         table_name,
@@ -83,7 +113,12 @@ def generate_table_config(template, table_name, matched_column):
     )
 
 
-def flag_unmatched(template, table_name):
+def flag_unmatched(template, table_name) -> dict:
+    """
+    Description: Builds an inactive table config when no watermark pattern matches any column.
+    Parameters: template: schema template dict; table_name: source table name
+    Return: Dict table configuration with unmatched reason
+    """
     return _scanner_table_config(
         template,
         table_name,
@@ -91,7 +126,12 @@ def flag_unmatched(template, table_name):
     )
 
 
-def flag_ambiguous(template, table_name, pattern, matched_columns):
+def flag_ambiguous(template, table_name, pattern, matched_columns) -> dict:
+    """
+    Description: Builds an inactive table config when a pattern matches multiple columns.
+    Parameters: template: schema template dict; table_name: source table name; pattern: ambiguous pattern; matched_columns: columns that matched
+    Return: Dict table configuration with ambiguity reason
+    """
     joined = ", ".join(matched_columns)
     return _scanner_table_config(
         template,
@@ -100,7 +140,12 @@ def flag_ambiguous(template, table_name, pattern, matched_columns):
     )
 
 
-def get_table_size_gb(spark, catalog, schema, table):
+def get_table_size_gb(spark, catalog, schema, table) -> float | None:
+    """
+    Description: Returns physical table size in GB from DESCRIBE DETAIL, or None if unknown or a view.
+    Parameters: spark: Spark session; catalog: catalog name; schema: schema name; table: table name
+    Return: Float size in GB, or None
+    """
     fq = build_full_table_name(catalog, schema, table)
     try:
         df = spark.sql(f"DESCRIBE DETAIL {fq}")
@@ -121,7 +166,12 @@ def get_table_size_gb(spark, catalog, schema, table):
         return None
 
 
-def check_size_threshold(table_size_gb, min_table_size_gb):
+def check_size_threshold(table_size_gb, min_table_size_gb) -> tuple[bool, str | None]:
+    """
+    Description: Returns whether the table meets the minimum size threshold for archiving.
+    Parameters: table_size_gb: size in GB or None; min_table_size_gb: minimum required GB (0 disables check)
+    Return: Tuple of pass flag and failure reason string or None
+    """
     if min_table_size_gb == 0:
         return True, None
     if table_size_gb is None:
@@ -137,7 +187,12 @@ def check_size_threshold(table_size_gb, min_table_size_gb):
     return True, None
 
 
-def write_staging(spark, configs, staging_table, scan_run_id):
+def write_staging(spark, configs, staging_table, scan_run_id) -> None:
+    """
+    Description: Inserts scan result configs into the staging Delta table with the scan run id.
+    Parameters: spark: Spark session; configs: list of table config dicts; staging_table: staging table name; scan_run_id: scan identifier
+    Return: None
+    """
     if not configs:
         return
     columns = [
@@ -158,6 +213,10 @@ def write_staging(spark, configs, staging_table, scan_run_id):
     rows = []
     for c in configs:
         dc = c.get("watermark_column")
+        if dc is not None:
+            validate_identifier(
+                dc, field="watermark_column", table_id=c.get("table_id")
+            )
         dc_sql = sql_quote(dc) if dc is not None else sql_expr("CAST(NULL AS STRING)")
         ry = c.get("retention_years")
         ry_sql = sql_int_or_null(ry)
@@ -185,7 +244,12 @@ def write_staging(spark, configs, staging_table, scan_run_id):
 
 def merge_staging_to_final(
     spark, staging_table, table_configs_table, scan_run_id, force=False
-):
+) -> None:
+    """
+    Description: MERGEs staging rows into table_configs and deactivates scanner rows missing from this scan.
+    Parameters: spark: Spark session; staging_table: staging table name; table_configs_table: destination table; scan_run_id: scan identifier; force: update even when modified_by is not scanner
+    Return: None
+    """
     force_cond = "TRUE" if force else "FALSE"
     qid = sql_quote(scan_run_id)
     merge_sql = f"""
@@ -228,7 +292,12 @@ WHERE modified_by = 'scanner'
     spark.sql(drop_sql)
 
 
-def _validate_volume_is_external(spark, archive_base_path):
+def _validate_volume_is_external(spark, archive_base_path) -> None:
+    """
+    Description: Verifies a /Volumes path refers to an EXTERNAL Unity Catalog volume.
+    Parameters: spark: Spark session; archive_base_path: volume path under /Volumes
+    Return: None
+    """
     parts = archive_base_path.rstrip("/").split("/")
     if len(parts) < 5:
         raise ArchiveConfigError(
@@ -261,7 +330,12 @@ def _validate_volume_is_external(spark, archive_base_path):
         )
 
 
-def validate_archive_path(spark, archive_base_path):
+def validate_archive_path(spark, archive_base_path) -> None:
+    """
+    Description: Ensures the archive path is a valid external volume or external location prefix.
+    Parameters: spark: Spark session; archive_base_path: archive base path to validate
+    Return: None
+    """
     normalized = archive_base_path.rstrip("/")
     if normalized.startswith("/Volumes/"):
         _validate_volume_is_external(spark, archive_base_path)
@@ -289,15 +363,30 @@ def validate_archive_path(spark, archive_base_path):
     )
 
 
-def _scanner_log_fq(settings):
+def _scanner_log_fq(settings) -> str:
+    """
+    Description: Returns the fully qualified scanner_log table name from audit settings.
+    Parameters: settings: dict with audit_catalog and audit_schema
+    Return: Three-part table name string
+    """
     return build_full_table_name(settings["audit_catalog"], settings["audit_schema"], "scanner_log")
 
 
-def ensure_scanner_log_table(spark, settings):
+def ensure_scanner_log_table(spark, settings) -> None:
+    """
+    Description: Creates the scanner_log Delta table if it does not already exist.
+    Parameters: spark: Spark session; settings: dict containing audit catalog and schema
+    Return: None
+    """
     ensure_table_with_setup_message(spark, _scanner_log_fq(settings), label="Scanner log table")
 
 
-def write_scanner_log(spark, settings, scan_run_id, table_results, job_context=None):
+def write_scanner_log(spark, settings, scan_run_id, table_results, job_context=None) -> None:
+    """
+    Description: Inserts per-table scan audit rows into the scanner_log table.
+    Parameters: spark: Spark session; settings: settings dict; scan_run_id: scan identifier; table_results: list of log row dicts; job_context: optional job metadata dict or None
+    Return: None
+    """
     if not table_results:
         return
     jc = job_context or {}
@@ -356,7 +445,12 @@ def write_scanner_log(spark, settings, scan_run_id, table_results, job_context=N
     spark.sql(sql)
 
 
-def _staging_table_from_configs(table_configs_table):
+def _staging_table_from_configs(table_configs_table) -> str:
+    """
+    Description: Derives the staging table name from the table_configs table name.
+    Parameters: table_configs_table: fully qualified table_configs table name
+    Return: Fully qualified staging table name string
+    """
     parts = table_configs_table.split(".")
     if parts and parts[-1] == "table_configs":
         parts[-1] = "table_configs_staging"
@@ -364,7 +458,12 @@ def _staging_table_from_configs(table_configs_table):
     return f"{table_configs_table}_staging"
 
 
-def _list_table_columns(spark, catalog, schema, table):
+def _list_table_columns(spark, catalog, schema, table) -> list[str]:
+    """
+    Description: Lists column names for a table from information_schema ordered by position.
+    Parameters: spark: Spark session; catalog: catalog name; schema: schema name; table: table name
+    Return: List of column name strings
+    """
     q = (
         f"SELECT column_name FROM {catalog}.information_schema.columns "
         f"WHERE table_catalog = {sql_quote(catalog)} "
@@ -375,7 +474,12 @@ def _list_table_columns(spark, catalog, schema, table):
     return [str(n) for n in collect_column(spark, q, "column_name") if n is not None]
 
 
-def _make_log_entry(tid, cat, sch, table_name, match_status, **overrides):
+def _make_log_entry(tid, cat, sch, table_name, match_status, **overrides) -> dict:
+    """
+    Description: Builds a scanner_log row dict with defaults and optional field overrides.
+    Parameters: tid: fully qualified table id; cat: source catalog; sch: source schema; table_name: table name; match_status: match outcome; overrides: optional log field overrides
+    Return: Dict log row for scanner_log
+    """
     entry = {
         "log_id": str(uuid.uuid4()),
         "table_id": tid,
@@ -397,7 +501,12 @@ def _make_log_entry(tid, cat, sch, table_name, match_status, **overrides):
     return entry
 
 
-def _empty_scan_summary():
+def _empty_scan_summary() -> dict:
+    """
+    Description: Returns a new scan summary dict with all counters set to zero.
+    Parameters: none
+    Return: Dict of summary counter fields
+    """
     return {
         "tables_matched": 0,
         "tables_ambiguous": 0,
@@ -409,7 +518,12 @@ def _empty_scan_summary():
     }
 
 
-def run_scanner(spark, settings, force=False, schema_id=None, job_context=None):
+def run_scanner(spark, settings, force=False, schema_id=None, job_context=None) -> dict:
+    """
+    Description: Runs the full schema scan, staging merge, and scanner_log write for configured templates.
+    Parameters: spark: Spark session; settings: application settings dict; force: merge force flag; schema_id: optional template filter; job_context: optional job metadata dict or None
+    Return: Dict scan summary including scan_run_id and counters
+    """
     scan_run_id = generate_archive_run_id()
     ensure_scanner_log_table(spark, settings)
     templates = config.load_schema_templates(

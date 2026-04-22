@@ -15,12 +15,12 @@ from datetime import date, datetime
 
 from src.config import load_settings, load_table_configs
 from src.exceptions import ArchiveConfigError
-from src.utils import generate_archive_run_id, sql_quote
+from src.utils import generate_archive_run_id
 
 # COMMAND ----------
 dbutils.widgets.text("config_table", "", "Config table (catalog.schema.global_settings)")
 dbutils.widgets.dropdown("dry_run", "true", ["true", "false"], "Dry run")
-dbutils.widgets.text("table_config_filter", "", "Optional SQL filter on table_configs")
+dbutils.widgets.text("table_config_filter", "", "Advanced: raw SQL filter (optional)")
 dbutils.widgets.text("source_catalog", "", "Source catalog (optional, must be set with source_schema)")
 dbutils.widgets.text("source_schema",  "", "Source schema (optional, must be set with source_catalog)")
 
@@ -39,14 +39,7 @@ if bool(source_catalog) != bool(source_schema):
         "source_catalog and source_schema must both be provided together (both or neither)."
     )
 
-filter_parts = []
-if source_catalog and source_schema:
-    filter_parts.append(
-        f"source_catalog = {sql_quote(source_catalog)} AND source_schema = {sql_quote(source_schema)}"
-    )
-if table_config_filter:
-    filter_parts.append(f"({table_config_filter})")
-filter_expr = " AND ".join(filter_parts) or None
+advanced_filter = table_config_filter.strip() or None
 
 
 def _json_safe(value):
@@ -79,11 +72,18 @@ settings = load_settings(spark, config_table)
 table_configs = load_table_configs(
     spark,
     settings["table_configs_table"],
-    filter_expr=filter_expr,
+    source_catalog=source_catalog,
+    source_schema=source_schema,
+    filter_expr=advanced_filter,
 )
-if not table_configs and filter_expr:
+filter_supplied = bool(
+    (source_catalog and source_schema) or advanced_filter
+)
+if not table_configs and filter_supplied:
     raise ArchiveConfigError(
-        f"No active table_configs matched filter: {filter_expr}"
+        "No active table_configs matched the supplied filters "
+        f"(source_catalog={source_catalog!r}, source_schema={source_schema!r}, "
+        f"filter_expr={advanced_filter!r})"
     )
 archive_run_id = generate_archive_run_id()
 dry_run_bool = str(dry_run_widget).lower() == "true"
@@ -107,7 +107,7 @@ print(
             "archive_run_id": archive_run_id,
             "table_count": len(foreach_inputs),
             "dry_run": dry_run_bool,
-            "filter_expr": filter_expr,
+            "filter_expr": advanced_filter,
             "source_catalog": source_catalog,
             "source_schema":  source_schema,
         },

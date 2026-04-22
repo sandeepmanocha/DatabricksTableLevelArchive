@@ -460,3 +460,90 @@ class TestValidateTableConfigFields:
         del r["source_catalog"]
         with pytest.raises(ArchiveConfigError):
             config.validate_table_config_dict(r)
+
+    def test_watermark_column_required(self):
+        from src import config
+
+        r = _valid_table_row()
+        del r["watermark_column"]
+        with pytest.raises(ArchiveConfigError, match="watermark_column"):
+            config.validate_table_config_dict(r)
+
+    def test_watermark_column_must_be_safe_identifier(self):
+        from src import config
+
+        r = _valid_table_row(watermark_column="created-at")
+        with pytest.raises(ArchiveConfigError, match="watermark_column"):
+            config.validate_table_config_dict(r)
+
+
+class TestLoadTableConfigsFilterAndScope:
+    def test_load_table_configs_typed_params_each_and_combined(self):
+        from src import config
+
+        rows = [_valid_table_row(table_id="scoped")]
+        spark = _mock_spark_with_rows(rows)
+        config.load_table_configs(
+            spark, "cat.cfg.table_cfgs", active_only=True, source_catalog="x"
+        )
+        sql1 = spark.sql.call_args[0][0]
+        assert "source_catalog = 'x'" in sql1
+
+        spark2 = _mock_spark_with_rows(rows)
+        config.load_table_configs(
+            spark2, "cat.cfg.table_cfgs", active_only=True, source_schema="my_sch"
+        )
+        assert "source_schema = 'my_sch'" in spark2.sql.call_args[0][0]
+
+        spark3 = _mock_spark_with_rows(rows)
+        config.load_table_configs(
+            spark3, "cat.cfg.table_cfgs", active_only=True, table_id="tid_a"
+        )
+        assert "table_id = 'tid_a'" in spark3.sql.call_args[0][0]
+
+        spark4 = _mock_spark_with_rows(rows)
+        config.load_table_configs(
+            spark4,
+            "cat.cfg.table_cfgs",
+            active_only=True,
+            source_catalog="x",
+            source_schema="y",
+            table_id="z",
+        )
+        sql4 = spark4.sql.call_args[0][0]
+        assert "source_catalog = 'x'" in sql4
+        assert "source_schema = 'y'" in sql4
+        assert "table_id = 'z'" in sql4
+
+    def test_filter_expr_rejects_semicolon_and_comments(self):
+        from src import config
+
+        for frag in (";", "--", "/*", "*/"):
+            spark = MagicMock()
+            expr = f"table_id = 'a'{frag}"
+            with pytest.raises(ArchiveConfigError, match="filter_expr"):
+                config.load_table_configs(
+                    spark, "cat.cfg.t", active_only=False, filter_expr=expr
+                )
+            spark.sql.assert_not_called()
+
+    def test_filter_expr_parse_error_becomes_config_error(self):
+        from src import config
+
+        rows = [_valid_table_row()]
+        spark = _mock_spark_with_rows(rows)
+
+        def sql_side_effect(q):
+            if "LIMIT 0" in q:
+                raise ValueError("parse boom")
+            mock_df = MagicMock()
+            mock_rows = [MagicMock(asDict=MagicMock(return_value=r)) for r in rows]
+            mock_df.collect.return_value = mock_rows
+            return mock_df
+
+        spark.sql.side_effect = sql_side_effect
+        with pytest.raises(ArchiveConfigError, match="filter_expr") as ei:
+            config.load_table_configs(
+                spark, "cat.cfg.t", active_only=False, filter_expr="bogus_expr = 1"
+            )
+        assert ei.value.__cause__ is not None

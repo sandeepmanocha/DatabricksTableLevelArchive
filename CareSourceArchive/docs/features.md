@@ -84,7 +84,7 @@ F13 (exceptions)  ─┬── F1 (utils) ──┬── F3 (config) ── F4 
 
 | Task | Description |
 |------|------------|
-| F3.1 | `load_table_configs(spark, table_configs_table, active_only=True)` → read `table_configs` Delta table, return validated list of table config dicts. Optionally filter to active rows. Supports optional `filter_expr` for subset processing (e.g., `source_schema = 'claims'`) |
+| F3.1 | `load_table_configs(spark, table_configs_table, active_only=True, *, source_catalog=None, source_schema=None, table_id=None, filter_expr=None)` → read `table_configs` Delta table, return validated list of table config dicts. Optionally filter to active rows. Optional typed filters (`source_catalog`, `source_schema`, `table_id`) and `filter_expr` (validated, parse-checked) for subset processing |
 | F3.2 | `load_settings(spark, config_table)` → read the single-row `global_settings` Delta table, validate required fields, return settings dict. The table contains pointers (`schema_templates_table`, `table_configs_table`) to other config tables |
 | F3.3 | `load_schema_templates(spark, schema_templates_table, schema_id=None)` → read `schema_templates` Delta table. Always filters `is_active = true`. When `schema_id` provided: return single matching template (raise if not found, inactive, or duplicate). When omitted: return all active templates, validate no duplicate `(source_catalog, source_schema)` pairs. Validates `min_table_size_gb` per row (required, numeric, >= 0). Uses `sql_quote()` for safe SQL construction |
 | F3.4 | Validate required fields per table config: source_catalog, source_schema, source_table, date_column, archive_base_path |
