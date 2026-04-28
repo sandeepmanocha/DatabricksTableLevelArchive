@@ -1,0 +1,66 @@
+# CareSource Archive — Delete Archived Slice recovery job (multi-table fan-out).
+#
+# Operator workflow:
+#   1. Set `table_ids` to a CSV of one or more table_id values (e.g. "claims,members").
+#   2. Trigger run with `dry_run=true` (default) to preview each slice.
+#   3. Re-run with `dry_run=false` and a non-empty `reason` to delete the archive
+#      Delta rows for each slice (writes RECOVERY_ARCHIVE_DELETED audit rows).
+#
+# Topology:
+#   generate_parameters → run_delete_archived_slice (for_each, concurrency = archive_foreach_concurrency)
+#
+# generate_parameters validates the CSV and emits one input per table_id; the
+# for_each task wires each input field into delete_archived_slice.py via
+# {{input.<field>}} so notebooks/recovery/delete_archived_slice.py stays
+# single-table and untouched. Per-iteration max_retries: 0 — recovery is manual
+# and must not silently retry.
+# Compute-neutral: cluster or serverless is determined per-target in databricks.yml.
+
+resources:
+  jobs:
+    caresource_delete_archived_slice:
+      name: caresource-delete-archived-slice
+      run_as:
+        service_principal_name: ${var.job_run_as_service_principal}
+      parameters:
+        - name: config_table
+          default: ""
+        - name: table_configs_table
+          default: ""
+        - name: table_ids
+          default: ""
+        - name: year
+          default: ""
+        - name: reason
+          default: ""
+        - name: dry_run
+          default: "true"
+      tasks:
+        - task_key: generate_parameters
+          notebook_task:
+            notebook_path: ../notebooks/recovery/generate_delete_archived_slice_inputs.py
+            base_parameters:
+              config_table: "{{job.parameters.config_table}}"
+              table_configs_table: "{{job.parameters.table_configs_table}}"
+              table_ids: "{{job.parameters.table_ids}}"
+              year: "{{job.parameters.year}}"
+              reason: "{{job.parameters.reason}}"
+              dry_run: "{{job.parameters.dry_run}}"
+        - task_key: run_delete_archived_slice
+          depends_on:
+            - task_key: generate_parameters
+          for_each_task:
+            concurrency: ${var.archive_foreach_concurrency}
+            inputs: "{{tasks.generate_parameters.values.delete_archived_slice_task_inputs}}"
+            task:
+              task_key: run_delete_archived_slice_iteration
+              max_retries: 0
+              notebook_task:
+                notebook_path: ../notebooks/recovery/delete_archived_slice.py
+                base_parameters:
+                  config_table: "{{input.config_table}}"
+                  table_configs_table: "{{input.table_configs_table}}"
+                  table_id: "{{input.table_id}}"
+                  year: "{{input.year}}"
+                  reason: "{{input.reason}}"
+                  dry_run: "{{input.dry_run}}"

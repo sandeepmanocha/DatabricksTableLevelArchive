@@ -2,6 +2,63 @@
 
 ---
 
+## Run — 2026-04-27 22:32 CDT
+
+**TL;DR:** Archive dry run on the post-fix + post-cleanup branch. DRY_RUN audit rows written for every table+year combo (claims 8 years/4985 rows, members 7 years/2990 rows, providers 6 years/995 rows). Source untouched (5000/3000/1000). Cleanup Change 4 (explicit `if dry_run / else` in `run()`) + the new `ArchiveBase` split exercised live without regression. All steps PASS.
+
+**Branch:** `feat/delta_config_build_v12_archive_refactor` (commit `a089564`)
+**Profile / Target:** `fe-sandbox-manocha` / `dev-serverless` (substituted from test case's `--profile DEFAULT` / `-t dev`)
+**Audit schema:** `dev2_archive.metadata`
+**Source schema:** `dev2_archive.source_data_samples`
+**Run URL:** https://fe-sandbox-manocha.cloud.databricks.com/?o=7474658872313088#job/645665657236546/run/405929190177256
+
+### Before
+
+| Object | Count |
+|---|---|
+| `archive_audit_log` rows | 0 (clean — 00T cleared then 01T re-created the table) |
+
+### Steps
+
+| # | Step | Result |
+|---|------|--------|
+| 1 | `bundle run caresource_archive_run --params dry_run=true,...` | PASS — `TERMINATED SUCCESS` (~103s) |
+| 2 | DRY_RUN audit rows per table+year | PASS — every row has `status=DRY_RUN` and `record_count > 0` |
+| 3 | Source row counts unchanged | PASS — `claims=5000, members=3000, providers=1000` |
+
+### DRY_RUN summary (Step 2 detail)
+
+| Table | Years | Total record_count | Source COUNT(*) | Delta (NULL watermarks) |
+|---|---|---|---|---|
+| `dev2_archive.source_data_samples.claims` | 8 (2018–2025) | 4 985 | 5 000 | 15 |
+| `dev2_archive.source_data_samples.members` | 7 (2019–2025) | 2 990 | 3 000 | 10 |
+| `dev2_archive.source_data_samples.providers` | 6 (2020–2025) | 995 | 1 000 | 5 |
+
+The "delta" column is the count of rows with NULL watermarks that the dry run intentionally excludes (logged as warnings; same behavior as Phase 2's 04T baseline).
+
+### Per-year breakdown
+
+```
+claims:    2018=623  2019=625  2020=620  2021=624  2022=625  2023=624  2024=622  2025=622  (8y, 4985)
+members:   2019=426  2020=426  2021=427  2022=428  2023=429  2024=426  2025=428             (7y, 2990)
+providers: 2020=163  2021=168  2022=166  2023=167  2024=166  2025=165                       (6y,  995)
+```
+
+### What Happened
+
+First archive dry run after the post-cleanup architecture lands. The cleanup commits exercised here for the first time end-to-end:
+- `df3a0a7` — explicit `if dry_run: ... else: ...` in `ArchiveEngine.run()`.
+- `d4c410f` — `ArchiveBase` extraction (`_prepare_run`, `_calculate_eligible_years`, `_source_year_count` all called via inheritance).
+- `be97efc` — tightened docstrings (no behavior implication).
+
+No regressions, no orphan-folder errors, no concurrent-skip noise. Each per-year `record_count` stays within ±1 of expected (Faker per-year sampling is non-deterministic across deploys but stays in the documented +/-2% band).
+
+### Next Steps
+
+Proceed to 05T (live CREATE).
+
+---
+
 ## Run — 2026-04-20 22:36 CDT
 
 **TL;DR:** Dry run passed (~138s). Job `TERMINATED SUCCESS`; 21 `DRY_RUN` rows (one per eligible table/year) written under new `archive_run_id`; all `record_count = 0` because every `(table, year)` bucket was already `ARCHIVED` in a prior live run — the archiver correctly treats those as skips. Source counts unchanged (5000/3000/1000); archive-volume file mtimes unchanged. No regression from the return-type annotations in `src/`.

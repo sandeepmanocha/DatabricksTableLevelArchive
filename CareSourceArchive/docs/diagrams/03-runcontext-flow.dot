@@ -1,0 +1,63 @@
+digraph runcontext_flow {
+    rankdir=LR;
+    graph [
+        fontname="Helvetica"
+        fontsize=10
+        bgcolor="#ffffff"
+        fontcolor=black
+    ];
+    node [
+        fontname="Helvetica"
+        fontsize=9
+        shape=box
+        style="rounded,filled"
+        fontcolor=black
+        color="#6f6f6f"
+    ];
+    edge [fontname="Helvetica", fontsize=8, fontcolor=black, color="#555555"];
+
+    subgraph cluster_settings {
+        label="global_settings Delta table";
+        labelloc=t;
+        fontsize=10;
+        fontcolor=black;
+        style=rounded;
+        fillcolor="#F0EEEA";
+        color="#a8a8a8";
+        SETTINGS [shape=record, fillcolor="#E4E8ED", label="{audit_catalog|audit_schema|default_retention_years|dry_run_default|archive_base_path_prefix|schema_templates_table|table_configs_table}"];
+    }
+
+    subgraph cluster_job {
+        label="Notebook context tags";
+        labelloc=t;
+        fontsize=10;
+        fontcolor=black;
+        style=rounded;
+        fillcolor="#F0EEEA";
+        color="#a8a8a8";
+        JOB [shape=record, fillcolor="#E2E6EB", label="{workspace_id|job_id|job_run_id|task_run_id}"];
+    }
+
+    subgraph cluster_runid {
+        label="generate_parameters.py";
+        labelloc=t;
+        fontsize=10;
+        fontcolor=black;
+        style=rounded;
+        fillcolor="#F0EEEA";
+        color="#a8a8a8";
+        RID [fillcolor="#E0E4E8", label="archive_run_id\n(UUID)"];
+    }
+
+    RC [fillcolor="#D6DEE2", label="RunContext"];
+    AL [fillcolor="#D2DCD4", label="AuditLogger"];
+    AE [fillcolor="#C8D4CA", label="ArchiveEngine"];
+    RE [fillcolor="#C8D4CA", label="RehydrationEngine"];
+
+    SETTINGS -> RC;
+    JOB -> RC;
+    RID -> RC;
+    RC -> AL;
+    RC -> AE;
+    RC -> RE;
+}

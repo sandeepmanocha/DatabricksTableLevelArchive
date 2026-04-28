@@ -165,7 +165,7 @@ CREATE TABLE IF NOT EXISTS {config_catalog}.{config_schema}.archive_audit_log (
   archive_run_id           STRING              COMMENT 'UUID for the archive job invocation',
   table_name               STRING              COMMENT 'Fully qualified source table name',
   year                     INT                 COMMENT 'Year partition being archived',
-  status                   STRING              COMMENT 'STARTED | ARCHIVED | ARCHIVED_AND_DELETED | FAILED | SKIPPED | SKIPPED_CONCURRENT | NO_DATA | DRY_RUN',
+  status                   STRING              COMMENT 'STARTED | ARCHIVED | ARCHIVED_AND_DELETED | FAILED | VERIFY_FAILED | SKIPPED | SKIPPED_CONCURRENT | NO_DATA | DRY_RUN | RECOVERY_ARCHIVE_DELETED | RECOVERY_ARCHIVE_ROLLED_BACK',
   record_count             BIGINT              COMMENT 'Number of records affected',
   conditions_applied       STRING              COMMENT 'JSON payload of exclusion conditions and counts',
   null_date_count          BIGINT              COMMENT 'Records with NULL in the date column',
@@ -178,7 +178,9 @@ CREATE TABLE IF NOT EXISTS {config_catalog}.{config_schema}.archive_audit_log (
   job_id                   STRING              COMMENT 'Job ID from job context',
   job_run_id               STRING              COMMENT 'Job run ID from job context',
   task_run_id              STRING              COMMENT 'Task run ID from job context',
-  created_at               TIMESTAMP           COMMENT 'When this audit entry was created'
+  created_at               TIMESTAMP           COMMENT 'When this audit entry was created',
+  needs_review             BOOLEAN             COMMENT 'True when this audit row needs operator review (failures, verify failures, RECOVERY_ARCHIVE_DELETED)',
+  archive_delta_version    BIGINT              COMMENT 'Delta version at archive time; used by recovery rollback'
 )
 CLUSTER BY (table_name, year)
 TBLPROPERTIES (

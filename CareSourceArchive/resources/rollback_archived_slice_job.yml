@@ -1,0 +1,40 @@
+# CareSource Archive — Rollback Archived Slice recovery job.
+# Wraps notebooks/recovery/rollback_archived_slice.py for manual partial-failure
+# recovery to a specific audit row (writes RECOVERY_ARCHIVE_ROLLED_BACK audit rows).
+# Compute-neutral: cluster or serverless is determined per-target in databricks.yml.
+#
+# Operator workflow: trigger run, supply table_id/year/target_audit_id.
+# `dry_run=true` is the default; flip to "false" only after reviewing the dry-run output.
+# No schedule and no retries — this is a manual recovery action.
+
+resources:
+  jobs:
+    caresource_rollback_archived_slice:
+      name: caresource-rollback-archived-slice
+      run_as:
+        service_principal_name: ${var.job_run_as_service_principal}
+      parameters:
+        - name: config_table
+          default: ""
+        - name: table_configs_table
+          default: ""
+        - name: table_id
+          default: ""
+        - name: year
+          default: ""
+        - name: target_audit_id
+          default: ""
+        - name: dry_run
+          default: "true"
+      tasks:
+        - task_key: run_rollback_archived_slice
+          max_retries: 0
+          notebook_task:
+            notebook_path: ../notebooks/recovery/rollback_archived_slice.py
+            base_parameters:
+              config_table: "{{job.parameters.config_table}}"
+              table_configs_table: "{{job.parameters.table_configs_table}}"
+              table_id: "{{job.parameters.table_id}}"
+              year: "{{job.parameters.year}}"
+              target_audit_id: "{{job.parameters.target_audit_id}}"
+              dry_run: "{{job.parameters.dry_run}}"

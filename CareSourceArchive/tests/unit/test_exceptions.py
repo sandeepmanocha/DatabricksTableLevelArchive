@@ -196,15 +196,29 @@ class TestDiagnosticMessage:
         assert "/archive/claims/2020" in msg
         assert "Data may be lost" in msg
 
-    def test_orphan_folder_formats_correctly(self):
+    def test_archive_folder_missing_formats_correctly(self):
         msg = ArchiveError.diagnostic_message(
-            "FAILED", "orphan_folder",
+            "FAILED", "archive_folder_missing",
             table="claims", year=2020, path="/archive/claims/2020",
         )
         assert "claims" in msg
         assert "2020" in msg
         assert "/archive/claims/2020" in msg
-        assert "no successful archive is recorded" in msg
+        assert "delete_archived_slice" in msg.lower()
+        assert "docs/runbooks/recovery.md" in msg
+
+    def test_archive_folder_orphan_formats_correctly(self):
+        msg = ArchiveError.diagnostic_message(
+            "FAILED", "archive_folder_orphan",
+            table="claims", year=2020, path="/archive/claims/2020",
+        )
+        assert "claims" in msg
+        assert "2020" in msg
+        assert "/archive/claims/2020" in msg
+        assert "delta" in msg.lower()
+        assert "delete_archived_slice" in msg.lower()
+        assert "docs/runbooks/recovery.md" in msg
+        assert "missing or empty" not in msg.lower()
 
     def test_count_mismatch_formats_correctly(self):
         msg = ArchiveError.diagnostic_message(
@@ -226,6 +240,137 @@ class TestDiagnosticMessage:
         assert "2020" in msg
         assert "archive" in msg
         assert "disk full" in msg
+
+    def test_target_missing_created_at_renders(self):
+        msg = ArchiveError.diagnostic_message(
+            "FAILED", "target_missing_created_at",
+            table="c.s.t", year=2020, target_audit_id="abc",
+        )
+        assert "c.s.t" in msg
+        assert "2020" in msg
+        assert "abc" in msg
+        assert "created_at" in msg
+        assert "ARCHIVED_AND_DELETED" in msg
+        assert "docs/runbooks/recovery.md" in msg
+
+    def test_target_missing_year_renders(self):
+        msg = ArchiveError.diagnostic_message(
+            "FAILED", "target_missing_year",
+            table="c.s.t", year=2020, target_audit_id="abc",
+        )
+        assert "c.s.t" in msg
+        assert "2020" in msg
+        assert "abc" in msg
+        assert "year" in msg.lower()
+        assert "docs/runbooks/recovery.md" in msg
+
+    def test_target_wrong_year_renders(self):
+        msg = ArchiveError.diagnostic_message(
+            "FAILED", "target_wrong_year",
+            table="c.s.t", year=2020, target_audit_id="abc", target_year=2019,
+        )
+        assert "c.s.t" in msg
+        assert "2020" in msg
+        assert "abc" in msg
+        assert "2019" in msg
+        assert "docs/runbooks/recovery.md" in msg
+
+    def test_target_missing_version_renders(self):
+        msg = ArchiveError.diagnostic_message(
+            "FAILED", "target_missing_version",
+            table="c.s.t", year=2020, target_audit_id="abc",
+        )
+        assert "c.s.t" in msg
+        assert "2020" in msg
+        assert "abc" in msg
+        assert "archive_delta_version" in msg
+        assert "delete_archived_slice" in msg.lower()
+        assert "docs/runbooks/recovery.md" in msg
+
+    def test_target_version_vacuumed_renders(self):
+        msg = ArchiveError.diagnostic_message(
+            "FAILED", "target_version_vacuumed",
+            table="c.s.t", year=2020, target_audit_id="abc",
+            target_version=42, path="/p/a/t",
+        )
+        assert "c.s.t" in msg
+        assert "2020" in msg
+        assert "abc" in msg
+        assert "42" in msg
+        assert "/p/a/t" in msg
+        assert "docs/runbooks/recovery.md" in msg
+
+    def test_target_version_unavailable_renders(self):
+        msg = ArchiveError.diagnostic_message(
+            "FAILED", "target_version_unavailable",
+            table="c.s.t", year=2020, target_audit_id="abc",
+            target_version=7, path="/x/y",
+        )
+        assert "c.s.t" in msg
+        assert "2020" in msg
+        assert "abc" in msg
+        assert "7" in msg
+        assert "/x/y" in msg
+        assert "docs/runbooks/recovery.md" in msg
+
+    def test_delete_archived_target_missing_renders(self):
+        msg = ArchiveError.diagnostic_message(
+            "FAILED", "delete_archived_target_missing",
+            table="c.s.t", year=2020, path="/z",
+        )
+        assert "c.s.t" in msg
+        assert "2020" in msg
+        assert "/z" in msg
+        assert "delete_archived_slice" in msg.lower()
+        assert "docs/runbooks/recovery.md" in msg
+
+    def test_rollback_after_source_delete_refused_renders(self):
+        msg = ArchiveError.diagnostic_message(
+            "FAILED", "rollback_after_source_delete_refused",
+            table="c.s.t", year=2020,
+            target_audit_id="t1", blocker_audit_id="b9",
+        )
+        assert "c.s.t" in msg
+        assert "2020" in msg
+        assert "t1" in msg
+        assert "b9" in msg
+        assert "ARCHIVED_AND_DELETED" in msg
+        assert "docs/runbooks/recovery.md" in msg
+
+    def test_delete_archived_after_source_delete_refused_renders(self):
+        msg = ArchiveError.diagnostic_message(
+            "FAILED", "delete_archived_after_source_delete_refused",
+            table="c.s.t", year=2020, blocker_audit_id="b9",
+        )
+        assert "c.s.t" in msg
+        assert "2020" in msg
+        assert "b9" in msg
+        assert "ARCHIVED_AND_DELETED" in msg
+        assert "docs/runbooks/recovery.md" in msg
+
+    def test_reason_required_renders(self):
+        msg = ArchiveError.diagnostic_message(
+            "FAILED", "reason_required",
+            table="c.s.t", year=2020,
+        )
+        assert "c.s.t" in msg
+        assert "2020" in msg
+        assert "reason" in msg.lower()
+        assert "delete_archived_slice" in msg.lower()
+
+    def test_target_status_not_rollbackable_renders(self):
+        msg = ArchiveError.diagnostic_message(
+            "FAILED", "target_status_not_rollbackable",
+            table="c.s.t", year=2020,
+            target_audit_id="abc", target_status="ARCHIVED_AND_DELETED",
+        )
+        assert "c.s.t" in msg
+        assert "2020" in msg
+        assert "abc" in msg
+        assert "ARCHIVED_AND_DELETED" in msg
+        assert "ARCHIVED" in msg
+        assert "RECOVERY_ARCHIVE_ROLLED_BACK" in msg
+        assert "docs/runbooks/recovery.md" in msg
 
     def test_unknown_status_returns_fallback(self):
         msg = ArchiveError.diagnostic_message(
@@ -265,9 +410,61 @@ class TestDiagnosticMessage:
         assert set(templates["SKIPPED_CONCURRENT"].keys()) == {"concurrent_skip"}
         assert set(templates["VERIFY_FAILED"].keys()) == {"source_drift"}
         assert set(templates["FAILED"].keys()) == {
-            "ownership", "missing_folder_after_delete", "orphan_folder",
-            "count_mismatch", "operation_failure", "cannot_determine_incremental_position",
+            "archive_folder_missing",
+            "archive_folder_orphan",
+            "cannot_determine_incremental_position",
+            "concurrent_run_on_table",
+            "count_mismatch",
+            "missing_folder_after_delete",
+            "not_eligible_for_delete",
+            "operation_failure",
+            "ownership",
+            "version_capture_failed",
+            "reason_required",
+            "delete_archived_after_source_delete_refused",
+            "delete_archived_target_missing",
+            "rollback_after_source_delete_refused",
+            "target_missing_created_at",
+            "target_missing_version",
+            "target_missing_year",
+            "target_version_unavailable",
+            "target_version_vacuumed",
+            "target_status_not_rollbackable",
+            "target_wrong_year",
         }
+
+    def test_not_eligible_for_delete_renders_all_placeholders(self):
+        msg = ArchiveError.diagnostic_message(
+            "FAILED",
+            "not_eligible_for_delete",
+            table="claims",
+            year=2020,
+            reason_code="verify_failed_present",
+            last_status="VERIFY_FAILED",
+        )
+        assert "claims" in msg
+        assert "2020" in msg
+        assert "verify_failed_present" in msg
+        assert "VERIFY_FAILED" in msg
+        assert "docs/runbooks/delete-source-after-archive.md" in msg
+
+    def test_concurrent_run_on_table_renders_all_placeholders(self):
+        msg = ArchiveError.diagnostic_message(
+            "FAILED",
+            "concurrent_run_on_table",
+            table="claims",
+            year=2020,
+            foreign_run_id="run-x-123",
+            foreign_year=2019,
+            age_hours=1.5,
+            stale_threshold_hours=4,
+        )
+        assert "claims" in msg
+        assert "2020" in msg
+        assert "run-x-123" in msg
+        assert "2019" in msg
+        assert "1.5" in msg
+        assert "4" in msg
 
 
 class TestIsNotFound:

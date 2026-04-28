@@ -195,6 +195,63 @@ class TestLoadTableConfigs:
         spark2 = _mock_spark_with_rows([_valid_table_row(table_id="cs1", exclusion_conditions=cs)])
         assert len(config.load_table_configs(spark2, "t", active_only=False)) == 1
 
+    def test_custom_sql_accepts_null_operator(self):
+        from src import config
+
+        conds = json.dumps(
+            [
+                {
+                    "name": "cs_null_op",
+                    "type": "custom_sql",
+                    "column": None,
+                    "operator": None,
+                    "value": "x {source_alias}.y = 1",
+                }
+            ]
+        )
+        rows = [_valid_table_row(exclusion_conditions=conds)]
+        spark = _mock_spark_with_rows(rows)
+        out = config.load_table_configs(spark, "t", active_only=False)
+        assert len(out) == 1
+
+    def test_custom_sql_accepts_unknown_operator(self):
+        from src import config
+
+        conds = json.dumps(
+            [
+                {
+                    "name": "cs_bogus_op",
+                    "type": "custom_sql",
+                    "column": None,
+                    "operator": "bogus",
+                    "value": "x {source_alias}.y = 1",
+                }
+            ]
+        )
+        rows = [_valid_table_row(exclusion_conditions=conds)]
+        spark = _mock_spark_with_rows(rows)
+        out = config.load_table_configs(spark, "t", active_only=False)
+        assert len(out) == 1
+
+    def test_same_table_still_rejects_unknown_operator(self):
+        from src import config
+
+        conds = json.dumps(
+            [
+                {
+                    "name": "n",
+                    "type": "same_table",
+                    "column": "c",
+                    "operator": "bogus",
+                    "value": 1,
+                }
+            ]
+        )
+        rows = [_valid_table_row(exclusion_conditions=conds)]
+        spark = _mock_spark_with_rows(rows)
+        with pytest.raises(ArchiveConfigError):
+            config.load_table_configs(spark, "t", active_only=False)
+
 
 class TestLoadSettings:
     def test_returns_dict_and_validates_required(self):
@@ -475,6 +532,64 @@ class TestValidateTableConfigFields:
         r = _valid_table_row(watermark_column="created-at")
         with pytest.raises(ArchiveConfigError, match="watermark_column"):
             config.validate_table_config_dict(r)
+
+    def test_inactive_row_with_empty_watermark_column_accepted(self):
+        """Scanner writes is_active=false rows with watermark_column='' when no pattern
+        matched. validate_table_config_dict must accept those rows so scanner re-runs
+        (which call load_table_configs with active_only=False) stay idempotent."""
+        from src import config
+
+        r = _valid_table_row(is_active=False, watermark_column="")
+        config.validate_table_config_dict(r)
+
+    def test_inactive_row_with_missing_watermark_column_accepted(self):
+        from src import config
+
+        r = _valid_table_row(is_active=False)
+        del r["watermark_column"]
+        config.validate_table_config_dict(r)
+
+    def test_inactive_row_with_unsafe_watermark_identifier_accepted(self):
+        """Unsafe identifier check is also skipped for inactive rows, since the column
+        is semantically unused when is_active=false."""
+        from src import config
+
+        r = _valid_table_row(is_active=False, watermark_column="created-at")
+        config.validate_table_config_dict(r)
+
+
+class TestLoadTableConfigsWithInactiveRows:
+    def test_load_table_configs_accepts_mixed_active_and_inactive_rows(self):
+        """Regression: scanner.run_scanner calls load_table_configs(active_only=False)
+        and must not crash when the store contains scanner-produced inactive rows
+        with empty watermark_column."""
+        from src import config
+
+        rows = [
+            _valid_table_row(
+                table_id="dev.src.claims",
+                watermark_column="event_date",
+                is_active=True,
+            ),
+            _valid_table_row(
+                table_id="dev.src.members",
+                watermark_column="",
+                is_active=False,
+            ),
+            _valid_table_row(
+                table_id="dev.src.providers",
+                watermark_column="",
+                is_active=False,
+            ),
+        ]
+        spark = _mock_spark_with_rows(rows)
+        out = config.load_table_configs(spark, "cat.cfg.table_cfgs", active_only=False)
+        assert len(out) == 3
+        assert {r["table_id"] for r in out} == {
+            "dev.src.claims",
+            "dev.src.members",
+            "dev.src.providers",
+        }
 
 
 class TestLoadTableConfigsFilterAndScope:

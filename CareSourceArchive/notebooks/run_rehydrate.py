@@ -43,9 +43,10 @@ import html
 from src.config import load_settings
 from src.utils import (
     RunContext,
-    archive_folder_exists,
-    generate_archive_run_id,
+    archive_state_and_count,
     configure_logging,
+    generate_archive_run_id,
+    table_base_name,
 )
 from src.audit import AuditLogger
 from src.rehydrator import RehydrationEngine
@@ -88,11 +89,11 @@ for label, val in (
 
 years_raw = years_raw.strip('"').strip("'")
 years = [int(y.strip()) for y in years_raw.split(",") if y.strip()]
-base_name = source_table.split(".")[-1].strip()
+base_name = table_base_name(source_table)
 available_archive_years = [
     y
     for y in years
-    if archive_folder_exists(dbutils, archive_base_path, base_name, y)
+    if archive_state_and_count(spark, archive_base_path, base_name, y)[0] != "MISSING"
 ]
 
 # COMMAND ----------

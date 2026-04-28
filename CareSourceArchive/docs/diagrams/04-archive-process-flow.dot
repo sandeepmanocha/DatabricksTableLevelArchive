@@ -1,0 +1,78 @@
+digraph archive_process_flow {
+    rankdir=TB;
+    graph [
+        fontname="Helvetica"
+        fontsize=10
+        bgcolor="#ffffff"
+        fontcolor=black
+    ];
+    node [fontname="Helvetica", fontsize=8, fontcolor=black, color="#6f6f6f"];
+    edge [fontname="Helvetica", fontsize=7, fontcolor=black, color="#555555"];
+
+    START [label="Archive Job", shape=ellipse, style=filled, fillcolor="#D2D9D5", fontcolor=black];
+    LOAD [label="Load config and\nfilter active tables", shape=box, style="rounded,filled", fillcolor="#E5E8EC"];
+    FOREACH [label="Process each table\nin parallel", shape=box, style="rounded,filled", fillcolor="#E5E8EC"];
+    YEARS [label="Calculate which years\nare old enough to archive", shape=box, style="rounded,filled", fillcolor="#E5E8EC"];
+    RESUME [label="Check audit:\nresume needed?", shape=diamond, style=filled, fillcolor="#CCD4CF", fontcolor=black];
+    DELETE2 [label="Resume: delete\nfrom source", shape=box, style="rounded,filled", fillcolor="#E0DEDB"];
+    FOLDERCHK [label="Year folder\nalready exists?", shape=diamond, style=filled, fillcolor="#CCD4CF", fontcolor=black];
+    CLAIM [label="Write STARTED to audit\nwith archive_run_id", shape=box, style="rounded,filled", fillcolor="#E5E8EC"];
+    WMCHK [label="New records\nabove last watermark?", shape=diamond, style=filled, fillcolor="#CCD4CF", fontcolor=black];
+    SKIPEXIST [label="Skip with SKIPPED\n— no new data above watermark", shape=box, style="rounded,filled", fillcolor="#E4E1E6"];
+    CONC [label="Concurrent run\ndetected?", shape=diamond, style=filled, fillcolor="#CCD4CF", fontcolor=black];
+    SKIPCONC [label="Skip with\nSKIPPED_CONCURRENT", shape=box, style="rounded,filled", fillcolor="#E4E1E6"];
+    CONDITIONS [label="Apply exclusion conditions\nto protect relevant records", shape=box, style="rounded,filled", fillcolor="#E5E8EC"];
+    DRY [label="Dry run?", shape=diamond, style=filled, fillcolor="#CCD4CF", fontcolor=black];
+    REPORT [label="Report what WOULD\nhappen — no changes", shape=box, style="rounded,filled", fillcolor="#E2E5E9"];
+    WRITEMODE [label="Year folder\nexists?", shape=diamond, style=filled, fillcolor="#CCD4CF", fontcolor=black];
+    WRITE [label="Write records to\nnew Delta External table\nat External Volume path", shape=box, style="rounded,filled", fillcolor="#DDE6DF"];
+    APPEND [label="Append newly-eligible\nrecords to existing\nyear Delta External table", shape=box, style="rounded,filled", fillcolor="#DDE6DF"];
+    META [label="Write _archive_metadata.json\nwith watermark value", shape=box, style="rounded,filled", fillcolor="#E0E3E7"];
+    VERIFY [label="Counts match +\nownership confirmed?", shape=diamond, style=filled, fillcolor="#CCD4CF", fontcolor=black];
+    FAIL [label="Abort — no delete\nArchiveVerificationError", shape=ellipse, style=filled, fillcolor="#D4C8C8", fontcolor=black];
+    DELQ [label="Delete from\nsource?", shape=diamond, style=filled, fillcolor="#CCD4CF", fontcolor=black];
+    DEL [label="Remove archived\nrecords from source", shape=box, style="rounded,filled", fillcolor="#D8D5D2"];
+    KEEP [label="Source unchanged", shape=box, style="rounded,filled", fillcolor="#E2E5E9"];
+    LOG [label="Log to audit\nwith new watermark", shape=box, style="rounded,filled", fillcolor="#DDD8D3"];
+    DONE [label="Done", shape=ellipse, style=filled, fillcolor="#D2D9D5", fontcolor=black];
+
+    START -> LOAD -> FOREACH -> YEARS -> RESUME;
+
+    RESUME -> DELETE2 [label="ARCHIVED +\ndelete=true"];
+    RESUME -> FOLDERCHK [label="No"];
+
+    FOLDERCHK -> CLAIM [label="No"];
+    FOLDERCHK -> WMCHK [label="Yes"];
+
+    WMCHK -> CLAIM [label="Yes"];
+    WMCHK -> SKIPEXIST [label="No"];
+
+    CLAIM -> CONC;
+    CONC -> SKIPCONC [label="Yes"];
+    CONC -> CONDITIONS [label="No"];
+
+    CONDITIONS -> DRY;
+    DRY -> REPORT [label="Yes"];
+    DRY -> WRITEMODE [label="No"];
+
+    WRITEMODE -> WRITE [label="No"];
+    WRITEMODE -> APPEND [label="Yes"];
+
+    WRITE -> META;
+    APPEND -> META;
+    META -> VERIFY;
+
+    VERIFY -> FAIL [label="No"];
+    VERIFY -> DELQ [label="Yes"];
+
+    DELQ -> DEL [label="Yes"];
+    DELQ -> KEEP [label="No"];
+
+    DEL -> LOG;
+    DELETE2 -> LOG;
+    KEEP -> LOG;
+    REPORT -> LOG;
+    SKIPCONC -> LOG;
+    SKIPEXIST -> LOG;
+    LOG -> DONE;
+}

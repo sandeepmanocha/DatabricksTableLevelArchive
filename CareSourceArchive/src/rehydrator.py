@@ -11,7 +11,13 @@ import json
 import logging
 
 from src.exceptions import ArchiveError, ArchiveOperationError
-from src.utils import build_archive_path, create_schema_if_not_exists
+from src.utils import (
+    build_archive_path,
+    build_full_table_name,
+    create_schema_if_not_exists,
+    row_value,
+    table_base_name,
+)
 
 LOGGER = logging.getLogger("caresource_archive.rehydrator")
 
@@ -21,7 +27,7 @@ def _describe_columns(spark, fq) -> list[str]:
     rows = spark.sql(f"DESCRIBE TABLE {fq}").collect()
     names = []
     for row in rows:
-        col_name = row["col_name"]
+        col_name = row_value(row, "col_name")
         if col_name is None or col_name == "" or str(col_name).startswith("#"):
             break
         names.append(col_name)
@@ -39,24 +45,17 @@ class RehydrationEngine:
         self._audit = audit
         self._spark = spark
 
-    def _source_base_name(self, source_table) -> str:
+    def _create_view(
+        self, *, fq_view, body_sql, source_table, year, operation,
+    ) -> None:
         """
-        Description: Return the last dot-separated segment of the source table identifier.
-        Parameters: source_table: table name string, possibly catalog.schema.table
-        Return: Base table name without leading catalog/schema segments.
-        """
-        parts = source_table.strip().split(".")
-        return parts[-1] if parts else source_table.strip()
-
-    def _create_archive_view(self, source_table, year, fq_view, loc_path) -> None:
-        """
-        Description: Create or replace a view over one year of archived Delta data.
-        Parameters: source_table: source table for diagnostics; year: archive year; fq_view: fully qualified view name; loc_path: Delta storage path
+        Description: Create or replace a view and wrap failures in a typed error.
+        Parameters: fq_view: fully qualified view name; body_sql: SELECT body after AS;
+            source_table: source table for diagnostics; year: archive year or "all";
+            operation: operation label carried on the raised error
         Return: None
         """
-        view_sql = (
-            f"CREATE OR REPLACE VIEW {fq_view} AS SELECT * FROM delta.`{loc_path}`"
-        )
+        view_sql = f"CREATE OR REPLACE VIEW {fq_view} AS {body_sql}"
         try:
             self._spark.sql(view_sql)
         except Exception as exc:
@@ -65,14 +64,14 @@ class RehydrationEngine:
                 "operation_failure",
                 table=source_table,
                 year=year,
-                operation="create_archive_view",
-                error=str(exc),
+                operation=operation,
+                error=f"{exc}; sql={view_sql[:500]}",
             )
             raise ArchiveOperationError(
                 msg,
                 table=source_table,
                 year=year,
-                operation="create_archive_view",
+                operation=operation,
                 reason="view_create_failed",
             ) from exc
 
@@ -125,10 +124,14 @@ class RehydrationEngine:
             include_live_data = params.get("include_live_data", False)
             unified_view_suffix = params.get("unified_view_suffix", "_unified")
 
-            base_name = self._source_base_name(source_table)
+            base_name = table_base_name(source_table)
             prefixed_base = f"{table_prefix}{base_name}"
             view_name = (
-                f"{target_catalog}.{target_schema}.{prefixed_base}{unified_view_suffix}"
+                build_full_table_name(
+                    target_catalog,
+                    target_schema,
+                    f"{prefixed_base}{unified_view_suffix}",
+                )
                 if create_unified_view
                 else None
             )
@@ -145,8 +148,16 @@ class RehydrationEngine:
                     skipped_years.append(year)
                     continue
                 loc_path = build_archive_path(archive_base_path, base_name, year)
-                ext_fq = f"{target_catalog}.{target_schema}.{prefixed_base}_year_{year}"
-                self._create_archive_view(source_table, year, ext_fq, loc_path)
+                ext_fq = build_full_table_name(
+                    target_catalog, target_schema, f"{prefixed_base}_year_{year}",
+                )
+                self._create_view(
+                    fq_view=ext_fq,
+                    body_sql=f"SELECT * FROM delta.`{loc_path}`",
+                    source_table=source_table,
+                    year=year,
+                    operation="create_archive_view",
+                )
                 tables_created += 1
                 created_years.append(year)
 
@@ -172,7 +183,11 @@ class RehydrationEngine:
                     participant_fqs.append(source_table)
                 for y in created_years:
                     participant_fqs.append(
-                        f"{target_catalog}.{target_schema}.{prefixed_base}_year_{y}"
+                        build_full_table_name(
+                            target_catalog,
+                            target_schema,
+                            f"{prefixed_base}_year_{y}",
+                        )
                     )
                 if len(participant_fqs) > 1:
                     first_fq = participant_fqs[0]
@@ -189,32 +204,16 @@ class RehydrationEngine:
                                 operation="rehydrate_unified_view",
                                 reason="schema_mismatch",
                             )
-                select_parts = []
-                if include_live_data:
-                    select_parts.append(f"SELECT * FROM {source_table}")
-                for y in created_years:
-                    ext_fq = f"{target_catalog}.{target_schema}.{prefixed_base}_year_{y}"
-                    select_parts.append(f"SELECT * FROM {ext_fq}")
-                union_body = " UNION ALL ".join(select_parts)
-                view_sql = f"CREATE OR REPLACE VIEW {view_name} AS {union_body}"
-                try:
-                    self._spark.sql(view_sql)
-                except Exception as exc:
-                    msg = ArchiveError.diagnostic_message(
-                        "FAILED",
-                        "operation_failure",
-                        table=source_table,
-                        year="all",
-                        operation="create_unified_view",
-                        error=f"{exc}; sql={view_sql[:500]}",
-                    )
-                    raise ArchiveOperationError(
-                        msg,
-                        table=source_table,
-                        year="all",
-                        operation="create_unified_view",
-                        reason="view_create_failed",
-                    ) from exc
+                union_body = " UNION ALL ".join(
+                    f"SELECT * FROM {fq}" for fq in participant_fqs
+                )
+                self._create_view(
+                    fq_view=view_name,
+                    body_sql=union_body,
+                    source_table=source_table,
+                    year="all",
+                    operation="create_unified_view",
+                )
 
             if tables_created == len(years):
                 run_status = "COMPLETED"

@@ -40,12 +40,11 @@ _job_context = {
 # COMMAND ----------
 import html
 
-from src.archiver import ArchiveEngine
-from src.audit import AuditLogger
-from src.config import load_settings, load_table_configs
+from src.config import load_settings, load_table_configs, merge_settings
 from src.utils import (
-    RunContext,
-    generate_archive_run_id,
+    archive_path_from_config,
+    archive_state_and_count,
+    calculate_eligible_years,
 )
 
 # COMMAND ----------
@@ -58,27 +57,56 @@ if not config_table:
 # COMMAND ----------
 settings = load_settings(spark, config_table)
 table_configs = load_table_configs(spark, settings["table_configs_table"])
-ctx = RunContext(
-    settings=settings,
-    job_context=_job_context,
-    archive_run_id=generate_archive_run_id(),
-)
-engine = ArchiveEngine(ctx, AuditLogger(ctx, spark), spark)
-report = engine.validate_archives(table_configs, dbutils)
+
+missing = []
+orphan = []
+_cy_row = spark.sql("SELECT YEAR(current_date()) AS y").first()
+_current_year = int(_cy_row["y"]) if _cy_row is not None else 0
+for tc in table_configs:
+    merged = merge_settings(settings, dict(tc))
+    years = calculate_eligible_years(
+        spark,
+        merged["source_table"],
+        merged["watermark_column"],
+        None,
+        None,
+        _current_year - int(merged["retention_years"]),
+    )
+    for y in years:
+        state, _ = archive_state_and_count(
+            spark, merged["archive_base_path"], merged["source_table"], y,
+        )
+        entry = {
+            "table_id": merged["table_id"],
+            "year": y,
+            "path": archive_path_from_config(merged, y),
+        }
+        if state == "MISSING":
+            missing.append(entry)
+        elif state == "ORPHAN":
+            orphan.append(entry)
+
+report = {
+    "valid": not missing and not orphan,
+    "missing": missing,
+    "orphan": orphan,
+}
 
 # COMMAND ----------
-missing = report.get("missing", [])
-valid = bool(report.get("valid"))
+valid = bool(report["valid"])
 
 _parts = [
     "<h3>Archive path validation (LOG-04)</h3>",
     f"<p><b>Valid</b>: {valid}</p>",
-    f"<p><b>Missing paths</b>: {len(missing)}</p>",
+    f"<p><b>Missing or orphan paths</b>: {len(missing) + len(orphan)} "
+    f"(missing={len(missing)}, orphan={len(orphan)})</p>",
 ]
-if missing:
+
+def _render_rows(rows, state_label):
+    _parts.append(f"<h4>{state_label}</h4>")
     _parts.append("<table border='1' cellpadding='6' cellspacing='0'>")
     _parts.append("<tr><th>table_id</th><th>year</th><th>path</th></tr>")
-    for m in missing:
+    for m in rows:
         _parts.append(
             "<tr>"
             f"<td>{html.escape(str(m.get('table_id', '')))}</td>"
@@ -87,7 +115,15 @@ if missing:
             "</tr>"
         )
     _parts.append("</table>")
-else:
-    _parts.append("<p>No missing archive paths for eligible years.</p>")
+
+if missing:
+    _render_rows(missing, "Missing paths")
+if orphan:
+    _render_rows(
+        orphan,
+        "Orphan or unreadable paths (DESCRIBE HISTORY failed — see docs/runbooks/recovery.md)",
+    )
+if not missing and not orphan:
+    _parts.append("<p>No missing or orphan archive paths for eligible years.</p>")
 
 displayHTML("\n".join(_parts))

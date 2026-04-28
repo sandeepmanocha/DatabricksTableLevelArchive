@@ -53,12 +53,10 @@ databricks bundle run setup_config_tables -t dev --profile DEFAULT
 ### 3. Seed dev config
 
 ```bash
-databricks bundle run setup_config_tables -t dev --profile DEFAULT
+databricks bundle run seed_config -t dev --profile DEFAULT
 ```
 
-Then run the `seed_config` notebook manually or via workspace UI.
-
-**Expect:** `global_settings` has 1 row, `schema_templates` has 1 row with `watermark_column_patterns = ['event_date', 'start_time', 'query_date']`.
+**Expect:** `global_settings` has 1 row, `schema_templates` has 1 row with `watermark_column_patterns = ['event_date', 'start_time', 'query_date', 'start_date', 'effective_date']`.
 
 ### 4. Generate test data
 

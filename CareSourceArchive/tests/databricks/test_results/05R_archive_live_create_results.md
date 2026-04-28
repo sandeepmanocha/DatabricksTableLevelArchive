@@ -1,5 +1,55 @@
 # 05 — Archive Live Run (CREATE mode) Results
 
+## Run — 2026-04-27 22:36 CDT
+
+**TL;DR:** First live archive on the post-fix + post-cleanup branch. All 21 table+year slices written in CREATE mode (~186s); audit `record_count` exactly matches archive folder COUNT(*) on the spot-check (claims_2020=623, members_2020=426, providers_2020=163). Source untouched (`delete_after_archive=false`). The fix's `_create_year` + `_verify_archive` source-side count + `_run_watermark_window` unfiltered-archive read all exercised live without regression. All steps PASS.
+
+**Branch:** `feat/delta_config_build_v12_archive_refactor` (commit `a089564`)
+**Profile / Target:** `fe-sandbox-manocha` / `dev-serverless`
+**Audit schema:** `dev2_archive.metadata`
+**Source schema:** `dev2_archive.source_data_samples`
+**Archive volume:** `/Volumes/dev2_archive/source_data_samples_archive/sample_data_archive_ext_vol/source_data_samples`
+**Run URL:** https://fe-sandbox-manocha.cloud.databricks.com/?o=7474658872313088#job/645665657236546/run/279467360511353
+
+### Before
+
+| Object | Count |
+|---|---|
+| `archive_audit_log` ARCHIVED rows | 0 (clean — 04T only wrote DRY_RUN; 00T cleared the table) |
+
+### Steps
+
+| # | Step | Result |
+|---|------|--------|
+| 1 | `bundle run caresource_archive_run --params dry_run=false,...` | PASS — `TERMINATED SUCCESS` (~186s) |
+| 2 | ARCHIVED audit rows | PASS — 21 rows, all `archive_mode=CREATE`, `record_count > 0`. Per-year breakdown matches 04T DRY_RUN counts byte-for-byte. |
+| 3 | Archive folders match audit | PASS — `delta.\`...claims/year_2020\` COUNT(*) = 623` (= audit `record_count`); `members/year_2020 = 426`; `providers/year_2020 = 163`. Volume `ls` lists `claims members providers` directories. |
+
+### ARCHIVED summary (Step 2 detail)
+
+| Table | Year range | Total record_count |
+|---|---|---|
+| `dev2_archive.source_data_samples.claims` | 2018–2025 (8 years) | 4 985 (623+624+623+623+624+624+622+622) |
+| `dev2_archive.source_data_samples.members` | 2019–2025 (7 years) | 2 990 (426+426+427+428+429+426+428) |
+| `dev2_archive.source_data_samples.providers` | 2020–2025 (6 years) | 995 (163+168+166+167+166+165) |
+
+### What Happened
+
+First live archive end-to-end after the fix + cleanup. Concrete verification points:
+
+- **Cleanup #1 (`_create_year` rename):** every CREATE row's audit `archive_mode='CREATE'` and the corresponding folder write went through the renamed method without mishap.
+- **Fix #3 (`_verify_archive` source-side):** every slice passed verification — counts match exactly between source and archive after each write.
+- **Fix #4 (`_run_watermark_window` unfiltered):** with `delete_after_archive=false` this branch isn't exercised yet; 08T will cover it.
+- **Cleanup #6 (`DeleteJob` split):** archive run only imports `ArchiveEngine`; the new `DeleteJob` module sits idle on this code path. No `ImportError`s, confirming `bundle deploy` synced the new module correctly.
+
+NULL-watermark rows stayed in source (consistent with 04T's deltas: claims=15, members=10, providers=5). Source row counts remain 5000/3000/1000.
+
+### Next Steps
+
+Proceed to 08T (exclusion conditions + step 4f audit-vs-folder; HARD STOP if any 4f FAIL).
+
+---
+
 ## Run — 2026-04-20 00:47 CDT
 
 **TL;DR:** Live archive passed cleanly on first attempt (~202s). All 21 table-year partitions archived in CREATE mode; Delta row counts match audit `record_count` exactly for all 21 (100%). Source tables unchanged (`delete_after_archive=false`), NULL-watermark rows confirmed to stay in source (claims=15, members=10, providers=5 — exactly the 04T dry-run delta).

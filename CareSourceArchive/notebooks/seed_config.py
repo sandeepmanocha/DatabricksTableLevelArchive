@@ -91,7 +91,7 @@ if st_count == 0:
           '{SCHEMA_TEMPLATE_ID}',
           '{CONFIG_CATALOG}',
           '{SOURCE_SCHEMA}',
-          ARRAY('event_date', 'start_time', 'query_date'),
+          ARRAY('event_date', 'start_time', 'query_date', 'start_date', 'effective_date'),
           0,
           '/Volumes/{CONFIG_CATALOG}/source_data_samples_archive/sample_data_archive_ext_vol/{SOURCE_SCHEMA}',
           false,

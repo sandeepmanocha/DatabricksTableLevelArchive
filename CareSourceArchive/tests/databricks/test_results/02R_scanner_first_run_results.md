@@ -2,6 +2,245 @@
 
 ---
 
+## Run — 2026-04-27 22:30 CDT
+
+**TL;DR:** Scanner ran cleanly on the post-fix + post-cleanup branch. Pre-seeded 5-pattern watermark list (`event_date, start_time, query_date, start_date, effective_date`) matched all 3 source tables on the first pass; `table_configs` has 3 active rows. No import-surface regressions from the `ArchiveBase` + `DeleteJob` split. All steps PASS.
+
+**Branch:** `feat/delta_config_build_v12_archive_refactor` (commit `a089564`)
+**Profile / Target:** `fe-sandbox-manocha` / `dev-serverless` (substituted from test case's `<PROFILE>` / `<TARGET>` placeholders)
+**Audit schema:** `dev2_archive.metadata`
+**Source schema:** `dev2_archive.source_data_samples`
+
+### Before
+
+| Object | Count | Expected | Result |
+|---|---|---|---|
+| `scanner_log` | 0 | 0 (clean first run) | PASS |
+| `table_configs` | 0 | 0 | PASS |
+
+### Steps
+
+| # | Step | Result | Run URL |
+|---|------|--------|---------|
+| 1 | `bundle run caresource_scanner --params config_table=dev2_archive.metadata.global_settings` | PASS — `TERMINATED SUCCESS` (40s, well under 90s expected) | https://fe-sandbox-manocha.cloud.databricks.com/?o=7474658872313088#job/969823066224415/run/746808757125786 |
+| 2 | `scanner_log` content | PASS — all 3 tables `matched` + `is_active=true` + `merge_action=added`: claims/event_date, members/start_date, providers/effective_date |
+| 3 | `table_configs` content | PASS — 3 rows, all `is_active=true`, `reason=""`, watermark columns set as expected |
+
+### What Happened
+
+`schema_templates` was seeded with the wide pattern list during 01T, so no `Manual Step` needed (the test case's optional `UPDATE schema_templates ... WHERE schema_id` widening step is not required when `seed_config.py` already ships the 5-pattern array). The post-cleanup architecture (`ArchiveBase` + `ArchiveEngine` in `src/archiver.py`, new `src/delete_job.py`) doesn't change the scanner's import surface — the scanner imports from `src.config` only — so this serves as a clean canary that the `bundle deploy` synced everything correctly.
+
+### Next Steps
+
+Proceed to 04T (archive dry run).
+
+---
+
+## Run — 2026-04-24 post-fix re-verify
+
+**TL;DR:** **PASS.** Manual step (re-run scanner after patterns were widened in prior session) now succeeds. Regression from the 09:19 run is fixed by making `watermark_column` validation conditional on `is_active=true` in `src/config.py`. All three source tables (`claims`, `members`, `providers`) now MATCH and promote to `is_active=true`. No bundle-sync race.
+
+**Branch:** `feat/delta_config_build_v9_del_data_phase2` (working tree; applied on top of `d838774`)
+**Profile:** `fe-sandbox-manocha`
+**Bundle target:** `dev-serverless`
+**Config catalog/schema:** `dev2_archive.metadata`
+**Source schema:** `dev2_archive.source_data_samples`
+**Schema ID:** `dev2_archive__source_data_samples`
+
+### Fix under test
+
+- **Code:** `src/config.py::validate_table_config_dict` now skips both the non-empty check and the identifier safety check for `watermark_column` when `is_active=false`. Rationale: scanner writes inactive rows with `watermark_column=""` when no pattern matched any column, and those rows must survive `load_table_configs(active_only=False)` so subsequent scanner runs stay idempotent.
+- **Tests:** added 4 unit tests in `tests/unit/test_config.py` (`TestValidateTableConfigFields` + new `TestLoadTableConfigsWithInactiveRows`) covering inactive rows with empty, missing, and unsafe `watermark_column` values, and a loader test with a mixed active/inactive row set.
+- **Unit suite:** `pytest tests/unit` → **461/461 passed** in 0.73s.
+
+### Pre-run state (reproduces the bug)
+
+| `table_id` | `is_active` | `watermark_column` | `scan_run_id` |
+|---|---|---|---|
+| `dev2_archive.source_data_samples.claims` | true | `event_date` | `3a647910-…` |
+| `dev2_archive.source_data_samples.members` | **false** | **(empty)** | `3a647910-…` |
+| `dev2_archive.source_data_samples.providers` | **false** | **(empty)** | `3a647910-…` |
+
+With the previous code, loading this exact state would hit `ArchiveConfigError: field='watermark_column', table_id='…members'` before any merge executed.
+
+### Step — Re-run the scanner (widened patterns from prior session still in schema_templates): **PASS**
+
+Command:
+
+```
+databricks bundle run caresource_scanner -t dev-serverless --profile fe-sandbox-manocha \
+  --params config_table=dev2_archive.metadata.global_settings,schema_id=dev2_archive__source_data_samples
+```
+
+- Run URL: https://fe-sandbox-manocha.cloud.databricks.com/?o=7474658872313088#job/969823066224415/run/510202780817355
+- Outcome: `TERMINATED SUCCESS`, no crash.
+
+### Post-run state
+
+All three rows merged with `scan_run_id=58596f37-daab-4d0a-bec2-925eb3d7db1f`:
+
+| `table_id` | `is_active` | `watermark_column` | `match_status` |
+|---|---|---|---|
+| `dev2_archive.source_data_samples.claims` | true | `event_date` | matched |
+| `dev2_archive.source_data_samples.members` | **true** | `start_date` | matched |
+| `dev2_archive.source_data_samples.providers` | **true** | `effective_date` | matched |
+
+### What Happened
+
+The loader no longer rejects scanner-produced inactive rows, so the re-scan proceeded past configuration load, applied the already-widened `watermark_column_patterns`, and correctly upgraded both `members` and `providers` to active with the newly-matched watermark columns. This is the behavior 02T's manual step expected in the 09:19 run.
+
+### Next Steps
+
+- Proceed to 03R follow-up Run for idempotency verification.
+
+---
+
+## Run — 2026-04-24 09:19 CDT
+
+**TL;DR:** Steps 1–3 PASS (scanner run #1 ~63s, `claims` matched on `event_date`, `members`/`providers` unmatched as expected). Manual step **FAIL** — after widening `watermark_column_patterns` to include `start_date` + `effective_date`, scanner run #2 crashes in `config.load_table_configs` with `ArchiveConfigError: field='watermark_column'` on the inactive `members` row from run #1. Regression vs the 2026-04-20 green run. No code changes made.
+
+**Branch:** `feat/delta_config_build_v9_del_data_phase2` (commit `d838774`)
+**Profile:** `fe-sandbox-manocha`
+**Workspace:** https://fe-sandbox-manocha.cloud.databricks.com
+**Bundle target:** `dev-serverless`
+**Config catalog/schema:** `dev2_archive.metadata`
+**Source schema:** `dev2_archive.source_data_samples`
+**Schema ID:** `dev2_archive__source_data_samples`
+**Run-as SP:** `44edd08d-b71a-4e29-a01b-4881be31a144`
+
+---
+
+### Before State
+
+| Table | Count |
+|---|---|
+| `dev2_archive.metadata.scanner_log` | 0 (clean start) |
+| `dev2_archive.metadata.table_configs` | 0 (clean start) |
+| `dev2_archive.metadata.global_settings` | 1 seeded row |
+| `dev2_archive.metadata.schema_templates` | 1 row, patterns=`[event_date, start_time, query_date]` |
+| `dev2_archive.source_data_samples.*` | 3 tables (claims=5000, members=3000, providers=1000) |
+
+---
+
+### Step 1 — Run the scanner (default patterns): **PASS**
+
+Command:
+
+```
+databricks bundle run caresource_scanner -t dev-serverless --profile fe-sandbox-manocha \
+  --params config_table=dev2_archive.metadata.global_settings
+```
+
+- Run URL: https://fe-sandbox-manocha.cloud.databricks.com/?o=7474658872313088#job/969823066224415/run/59220475641577
+- Duration: ~63s, TERMINATED SUCCESS on first attempt (no bundle-sync race).
+
+### Step 2 — Check `scanner_log`: **PASS**
+
+| `source_table` | `match_status` | `matched_column` | `is_active` | `merge_action` |
+|---|---|---|---|---|
+| `claims` | matched | `event_date` | true | added |
+| `members` | unmatched | (empty) | false | added |
+| `providers` | unmatched | (empty) | false | added |
+
+All three rows exactly match expected behavior for the seeded narrow pattern set.
+
+### Step 3 — Check `table_configs`: **PASS**
+
+| `table_id` | `watermark_column` | `is_active` | `reason` | `scan_run_id` |
+|---|---|---|---|---|
+| `dev2_archive.source_data_samples.claims` | `event_date` | true | (empty) | `3a647910-08d0-47d0-9f41-f72f9b772cf6` |
+| `dev2_archive.source_data_samples.members` | (empty) | false | `no date column matched — no pattern matched any column` | `3a647910-08d0-47d0-9f41-f72f9b772cf6` |
+| `dev2_archive.source_data_samples.providers` | (empty) | false | `no date column matched — no pattern matched any column` | `3a647910-08d0-47d0-9f41-f72f9b772cf6` |
+
+One row per discovered source table, active row has a watermark, inactive rows carry a human-readable reason. As expected.
+
+---
+
+### Manual Step — Widen patterns and re-run scanner: **FAIL (code regression)**
+
+**SQL UPDATE executed successfully:**
+
+```sql
+UPDATE dev2_archive.metadata.schema_templates
+SET watermark_column_patterns = ARRAY('event_date','start_time','query_date','start_date','effective_date')
+WHERE schema_id = 'dev2_archive__source_data_samples'
+```
+
+→ `num_affected_rows=1` ✓
+
+**Scanner re-run: FAIL.**
+
+- Command (same params as step 1).
+- Duration: ~43s until task crashed.
+- Exit status: `INTERNAL_ERROR: Task run_scanner failed`.
+
+**Exact error:**
+
+```
+ArchiveConfigError: Config error: field='watermark_column', table_id='dev2_archive.source_data_samples.members'
+```
+
+**Full stack trace (summarized):**
+
+```
+notebooks/run_scanner.py line 5
+  → src/scanner.py:540  run_scanner()
+      existing = { r["table_id"]: r
+                   for r in config.load_table_configs(spark, table_configs_table, active_only=False) }
+  → src/config.py:217  load_table_configs()
+      for r in rows: validate_table_config_dict(r)
+  → src/config.py:135  validate_table_config_dict()
+      for key in _REQUIRED_TABLE_CONFIG_KEYS: _require_non_empty_str(d, key, table_id=tid)
+  → src/config.py:77   _require_non_empty_str()
+      if v is None or not isinstance(v, str) or not v.strip():
+          raise ArchiveConfigError(field=key, table_id=table_id)
+```
+
+**Root cause (diagnosis only — no code changed):**
+
+- `scanner.run_scanner` at line 540 loads all existing table_configs **including inactive rows** (`active_only=False`) to drive its upsert logic.
+- `config.load_table_configs` at line 217 unconditionally calls `validate_table_config_dict` on every row.
+- `_REQUIRED_TABLE_CONFIG_KEYS` (defined at `src/config.py:27-34`) includes `watermark_column`.
+- Scanner run #1 correctly wrote `members` and `providers` rows as `is_active=false` with `watermark_column=""` (matches the "no date column matched" reason). Those same rows now fail validation on the next scanner invocation.
+
+This is a **self-inflicted deadlock**: the scanner itself is the only writer that produces rows with empty `watermark_column`, and those rows then make the scanner unable to run again.
+
+**Regression evidence:**
+
+The 2026-04-20 run logged in this same results file ran the identical flow on the same target and reported "After widening `watermark_column_patterns` to include `start_date` and `effective_date`, scanner #2 passed (~63s) and all three tables became active." So this is a recent change.
+
+`git log --oneline src/config.py` shows three commits since the 2026-04-20 run: `453ae6f` (H10 filter_expr hardening + code-review findings), `08d41dd` (docs), `faec6ea` (type annotations). The H10 commit is the most likely source — it explicitly mentions code-review findings.
+
+**Post-failure state (verified, unchanged from after run #1):**
+
+| table_configs | Count | Distinct scan_run_ids |
+|---|---|---|
+| | 3 | 1 (`3a647910…`) |
+
+| scanner_log | Count | Distinct scan_run_ids |
+|---|---|---|
+| | 3 | 1 (`3a647910…`) |
+
+Scanner #2 failed **before** writing anything to either table, so the store is not corrupted — it still reflects only scanner #1. This is good news: a code fix + re-run is sufficient recovery, no data cleanup required.
+
+---
+
+## What Happened
+
+Scanner #1 (default narrow patterns) behaved exactly as the test spec expects: `claims` matched on `event_date` and is active, `members` and `providers` stayed inactive with empty `watermark_column`. The manual "widen patterns and re-run" step then crashed because the scanner's own reload path (`load_table_configs` in `src/config.py`) now validates `watermark_column` as non-empty on **every** loaded row, regardless of `is_active`. Scanner-produced inactive rows have empty `watermark_column` by design, so the second run never gets past loading existing state — it crashes before producing any staging writes. No code or data was changed in response, per the test rules.
+
+## Next Steps
+
+- **Dev fix required.** Options for the developer to consider (no preference called out here):
+  1. Skip `watermark_column` validation in `validate_table_config_dict` when the row is `is_active=false`. Simplest, matches the current scanner behavior that only active rows need a watermark.
+  2. Remove `watermark_column` from `_REQUIRED_TABLE_CONFIG_KEYS` and instead require it only in the code paths that actually use it (archive run, per-table processing).
+  3. Change scanner to write a placeholder/sentinel value (e.g. `"__none__"`) into `watermark_column` for inactive rows. Less clean but preserves the "always non-empty" invariant.
+- Add a regression test that covers the "scanner wrote inactive rows → scanner re-runs" loop on this exact shape of data. The existing unit tests either don't cover `load_table_configs` on inactive rows with empty watermark, or they cover it and the real scanner output schema has drifted from what the tests feed in.
+- After the fix, re-run `02T_scanner_first_run` manual step and `03T_scanner_rescan_idempotent` from the current state — no `00T` rerun needed (table_configs is not corrupted, we can just re-trigger scanner once the validator is relaxed).
+- Consider widening the 01 seeded `watermark_column_patterns` to include `start_date` and `effective_date` by default, so scanner #1 produces all-active rows and the 02 negative-case test becomes a dedicated test with its own narrow pattern set rather than being baked into the default dev seed.
+
+---
+
 ## Run — 2026-04-20 05:33 UTC
 
 **TL;DR:** Scanner run #1 failed twice (bundle sync race — `run_scanner.py` missing, then `src/config.py`+`src/__init__.py` missing on first attempts). Once all files finished uploading, scanner #1 passed (~63s) and produced the expected partial match (claims active; members/providers unmatched). After widening `watermark_column_patterns` to include `start_date` and `effective_date`, scanner #2 passed (~63s) and all three tables became active.

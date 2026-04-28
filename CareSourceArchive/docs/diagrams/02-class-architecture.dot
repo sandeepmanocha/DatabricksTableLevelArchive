@@ -1,0 +1,42 @@
+digraph class_architecture {
+    rankdir=TB;
+    graph [
+        fontname="Helvetica"
+        fontsize=10
+        bgcolor="#ffffff"
+        fontcolor=black
+        pad=0.08
+        nodesep=0.45
+        ranksep=0.7
+    ];
+    node [
+        fontname="Helvetica"
+        fontsize=8
+        shape=record
+        style=filled
+        fontcolor=black
+        color="#6f6f6f"
+        margin="0.45,0.28"
+        width=2.4
+    ];
+    edge [fontname="Helvetica", fontsize=8, fontcolor=black, color="#555555"];
+
+    RunContext [fillcolor="#E6E9F0", label="{RunContext|«dataclass»|settings: dict\ljob_context: dict\larchive_run_id: str\l}"];
+    ArchiveError [fillcolor="#E0E5E8", label="{ArchiveError|«exception base»|+diagnostic_message(status, reason)$\l+is_not_found(exc)$\l}"];
+    ArchiveConfigError [fillcolor="#DDE3E7", label="{ArchiveConfigError|«exception»|field: str\ltable_id: str\l}"];
+    ArchiveOperationError [fillcolor="#DDE3E7", label="{ArchiveOperationError|«exception»|table: str\lyear: int\loperation: str\lreason: str\l}"];
+    ArchiveVerificationError [fillcolor="#DDE3E7", label="{ArchiveVerificationError|«exception»|table: str\lyear: int\lexpected: int\lactual: int\l}"];
+    AuditLogger [fillcolor="#D8E3DA", label="{AuditLogger|-ctx: RunContext\l-spark: SparkSession|+log_archive(...)\l+log_rehydrate(...)\l+log_dry_run(...)\l+check_resume_state(table_config, year)\l+check_concurrent(table, year, archive_run_id)\l+get_last_run_state(table, year)\l+get_latest_status(table, year)\l}"];
+    ArchiveEngine [fillcolor="#CED9CF", label="{ArchiveEngine|-ctx: RunContext\l-audit: AuditLogger\l-spark: SparkSession|+run(table_config, dry_run, dbutils)\l+validate_archives(table_configs, dbutils)\l}"];
+    RehydrationEngine [fillcolor="#CED9CF", label="{RehydrationEngine|-ctx: RunContext\l-audit: AuditLogger\l-spark: SparkSession|+run(params)\l}"];
+
+    ArchiveConfigError -> ArchiveError [arrowhead=empty];
+    ArchiveOperationError -> ArchiveError [arrowhead=empty];
+    ArchiveVerificationError -> ArchiveError [arrowhead=empty];
+
+    RunContext -> AuditLogger [label="passed to constructor", style=dashed];
+    RunContext -> ArchiveEngine [label="passed to constructor", style=dashed];
+    RunContext -> RehydrationEngine [label="passed to constructor", style=dashed];
+    AuditLogger -> ArchiveEngine [label="passed to constructor", style=dashed];
+    AuditLogger -> RehydrationEngine [label="passed to constructor", style=dashed];
+}

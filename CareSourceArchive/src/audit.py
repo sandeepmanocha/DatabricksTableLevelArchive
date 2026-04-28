@@ -18,6 +18,7 @@ from src.utils import (
     build_insert_values_sql,
     ensure_table_with_setup_message,
     row_value,
+    sql_bool,
     sql_date_or_null,
     sql_expr,
     sql_int,
@@ -48,17 +49,34 @@ ALLOWED_ARCHIVE_STATUSES = frozenset(
         "SKIPPED",
         "SKIPPED_CONCURRENT",
         "NO_DATA",
+        "RECOVERY_ARCHIVE_DELETED",
+        "RECOVERY_ARCHIVE_ROLLED_BACK",
     }
 )
 ARCHIVE_TERMINAL_STATUSES = frozenset(ALLOWED_ARCHIVE_STATUSES - {"STARTED"})
 
-ARCHIVE_SUCCESS_STATUSES = frozenset({"ARCHIVED", "ARCHIVED_AND_DELETED"})
+ARCHIVE_SUCCESS_STATUSES = frozenset(
+    {"ARCHIVED", "ARCHIVED_AND_DELETED", "RECOVERY_ARCHIVE_ROLLED_BACK"}
+)
 
 ALLOWED_REHYDRATION_STATUSES = frozenset(
     {
         "COMPLETED",
         "PARTIAL_COMPLETED",
         "FAILED",
+    }
+)
+
+ALLOWED_DRY_RUN_ACTIONS = frozenset(
+    {
+        "WOULD_ARCHIVE",
+        "WOULD_APPEND",
+        "WOULD_DELETE",
+        "SKIP_NOT_ELIGIBLE",
+        "SKIP_CONCURRENT",
+        "SKIP_DRIFT",
+        "SKIP",
+        "ERROR",
     }
 )
 
@@ -81,6 +99,8 @@ ARCHIVE_AUDIT_COLUMNS = [
     "job_run_id",
     "task_run_id",
     "created_at",
+    "needs_review",
+    "archive_delta_version",
 ]
 
 REHYDRATION_AUDIT_COLUMNS = [
@@ -212,10 +232,12 @@ class AuditLogger:
         watermark_value: Optional[datetime_module.date] = None,
         source_year_count: Optional[int] = None,
         archive_mode: Optional[str] = None,
+        needs_review: bool = False,
+        archive_delta_version: int | None = None,
     ) -> None:
         """
         Description: Inserts one archive audit row for a table-year with counts and optional metadata.
-        Parameters: table: table name; year: partition year; status: allowed archive status; record_count: row count; conditions_applied: optional JSON or summary; null_date_count: optional null-date count; error_message: optional error text; watermark_value: optional watermark date; source_year_count: optional source count; archive_mode: optional mode label
+        Parameters: table: table name; year: partition year; status: allowed archive status; record_count: row count; conditions_applied: optional JSON or summary; null_date_count: optional null-date count; error_message: optional error text; watermark_value: optional watermark date; source_year_count: optional source count; archive_mode: optional mode label; needs_review: flag for human follow-up; archive_delta_version: optional Delta table version
         Return: None
         """
         if status not in ALLOWED_ARCHIVE_STATUSES:
@@ -235,6 +257,8 @@ class AuditLogger:
             sql_int_or_null(source_year_count),
             sql_str_or_null(archive_mode),
             *self._job_context_values(),
+            sql_bool(needs_review),
+            sql_int_or_null(archive_delta_version),
         ]
         sql = build_insert_values_sql(self._archive_table(), ARCHIVE_AUDIT_COLUMNS, values)
         self._spark.sql(sql)
@@ -266,6 +290,7 @@ class AuditLogger:
             record_count=int(archive_count),
             error_message=msg,
             source_year_count=int(source_count),
+            needs_review=True,
         )
 
     def log_rehydrate(
@@ -317,9 +342,16 @@ class AuditLogger:
     ) -> None:
         """
         Description: Logs a DRY_RUN row with JSON-encoded eligibility and per-condition counts.
-        Parameters: table: table name; year: partition year; total_eligible: eligible rows; would_archive: rows that would archive; per_condition_counts: counts map by condition; null_date_count: optional null-date count; action: optional action label
+        Parameters: table: table name; year: partition year; total_eligible: eligible rows; would_archive: rows that would archive; per_condition_counts: counts map by condition; null_date_count: optional null-date count; action: optional action label from ALLOWED_DRY_RUN_ACTIONS
         Return: None
         """
+        if action is not None and action not in ALLOWED_DRY_RUN_ACTIONS:
+            raise ArchiveConfigError(
+                msg=(
+                    f"Invalid dry-run action: {action!r}. "
+                    f"Allowed: {sorted(ALLOWED_DRY_RUN_ACTIONS)}"
+                )
+            )
         payload = {
             "action": action,
             "per_condition_counts": dict(per_condition_counts),
@@ -335,6 +367,7 @@ class AuditLogger:
             conditions_applied=conditions_applied,
             null_date_count=null_date_count,
             error_message=None,
+            needs_review=False,
         )
 
     def check_resume_state(self, table_config: Mapping[str, Any], year: int) -> Optional[str]:
@@ -452,3 +485,156 @@ LIMIT 1"""
         if age_hours < stale_threshold_hours:
             return (True, False, foreign_run_id, age_hours)
         return (False, True, foreign_run_id, age_hours)
+
+    def check_concurrent_any_year(
+        self,
+        table: str,
+        archive_run_id: str,
+        stale_threshold_hours: float = 4,
+    ) -> tuple:
+        """
+        Description: Table-scoped concurrency probe (mirrors check_concurrent without the year predicate).
+        Parameters: table: table name; archive_run_id: this run's id; stale_threshold_hours: hours before treating foreign STARTED as stale
+        Return: Tuple of (busy, foreign_run_id, foreign_year, age_hours); (False, None, None, None) when no foreign STARTED fresh enough to block.
+        """
+        audit_tbl = self._archive_table()
+        terminal_statuses_sql = _sql_in_string_set(ARCHIVE_TERMINAL_STATUSES)
+        sql = f"""SELECT s.archive_run_id, s.year, s.created_at FROM {audit_tbl} s
+WHERE s.table_name = {sql_quote(table)}
+  AND s.status = 'STARTED'
+  AND s.archive_run_id <> {sql_quote(archive_run_id)}
+  AND NOT EXISTS (
+    SELECT 1 FROM {audit_tbl} t
+    WHERE t.table_name = s.table_name
+      AND t.year = s.year
+      AND t.archive_run_id = s.archive_run_id
+      AND t.status IN ({terminal_statuses_sql})
+  )
+ORDER BY s.created_at DESC
+LIMIT 1"""
+        rows = self._spark.sql(sql).collect()
+        if not rows:
+            return (False, None, None, None)
+        r = rows[0]
+        foreign_run_id = row_value(r, "archive_run_id")
+        foreign_year_raw = row_value(r, "year")
+        foreign_year = int(foreign_year_raw) if foreign_year_raw is not None else None
+        created_at = row_value(r, "created_at")
+        now = _utc_now()
+        if isinstance(created_at, datetime_module.datetime):
+            ct = created_at
+            if ct.tzinfo is None:
+                ct = ct.replace(tzinfo=datetime_module.timezone.utc)
+            else:
+                ct = ct.astimezone(datetime_module.timezone.utc)
+            age_hours = max(0.0, (now - ct).total_seconds() / 3600.0)
+        else:
+            logger.warning(
+                "check_concurrent_any_year: created_at for run %s is %s, not "
+                "datetime. Treating as stale.",
+                foreign_run_id,
+                type(created_at).__name__,
+            )
+            age_hours = float(stale_threshold_hours)
+        if age_hours < stale_threshold_hours:
+            return (True, foreign_run_id, foreign_year, age_hours)
+        return (False, foreign_run_id, foreign_year, age_hours)
+
+    def is_eligible_for_delete(
+        self,
+        table: str,
+        year: int,
+        archive_run_id: Optional[str] = None,
+        stale_threshold_hours: float = 4,
+    ) -> tuple:
+        """
+        Description: Three-check delete-job eligibility probe for one table-year slice.
+        Parameters: table: table name; year: partition year; archive_run_id: this run's id for the concurrency check (uses an all-zeros sentinel when omitted); stale_threshold_hours: hours before a foreign STARTED is treated as stale
+        Return: Tuple of (eligible, reason_code). reason_code is one of: not_archived_state, concurrent_foreign_run, verify_failed_present; None when eligible.
+        """
+        last_state = self.get_last_run_state(table, year)
+        last_status = last_state[0] if last_state else None
+        if last_status != "ARCHIVED":
+            return (False, "not_archived_state")
+        probe_run_id = archive_run_id or "00000000-0000-0000-0000-000000000000"
+        is_concurrent, _is_stale, _foreign_run_id, _age_hours = self.check_concurrent(
+            table, year, probe_run_id, stale_threshold_hours=stale_threshold_hours,
+        )
+        if is_concurrent:
+            return (False, "concurrent_foreign_run")
+        vf_sql = (
+            f"SELECT 1 AS n FROM {self._archive_table()} "
+            f"WHERE table_name = {sql_quote(table)} AND year = {int(year)} "
+            f"AND status = 'VERIFY_FAILED' LIMIT 1"
+        )
+        vf_rows = self._spark.sql(vf_sql).collect()
+        if len(vf_rows) > 0:
+            return (False, "verify_failed_present")
+        return (True, None)
+
+    def get_prior_archived_run(
+        self,
+        table: str,
+        year: int,
+    ) -> Optional[tuple]:
+        """
+        Description: Returns the most recent ARCHIVED audit row for a slice (any run).
+        Parameters: table: table name; year: partition year
+        Return: Tuple of (archive_run_id, created_at) or None when no ARCHIVED row exists.
+        """
+        sql = (
+            f"SELECT archive_run_id, created_at FROM {self._archive_table()} "
+            f"WHERE table_name = {sql_quote(table)} AND year = {int(year)} "
+            f"AND status = 'ARCHIVED' "
+            f"ORDER BY created_at DESC LIMIT 1"
+        )
+        rows = self._spark.sql(sql).collect()
+        if not rows:
+            return None
+        r = rows[0]
+        run_id = row_value(r, "archive_run_id")
+        created_at = row_value(r, "created_at")
+        if run_id is None:
+            return None
+        return (run_id, created_at)
+
+    def get_last_archived_record_count(
+        self,
+        table: str,
+        year: int,
+    ) -> Optional[int]:
+        """
+        Description: Reads the archive_audit_log (not the archive data table) and returns record_count from the most recent ARCHIVED audit row for a slice, or None when there is no ARCHIVED row (or its record_count is NULL).
+        Parameters: table: table name; year: partition year
+        Return: Integer record_count or None.
+        """
+        sql = (
+            f"SELECT record_count FROM {self._archive_table()} "
+            f"WHERE table_name = {sql_quote(table)} AND year = {int(year)} "
+            f"AND status = 'ARCHIVED' "
+            f"ORDER BY created_at DESC LIMIT 1"
+        )
+        rows = self._spark.sql(sql).collect()
+        if not rows:
+            return None
+        rc = row_value(rows[0], "record_count")
+        if rc is None:
+            return None
+        return int(rc)
+
+    def has_verify_failed(
+        self,
+        table: str,
+        year: int,
+    ) -> bool:
+        """
+        Description: Returns True when any VERIFY_FAILED audit row exists for the slice.
+        Parameters: table: table name; year: partition year
+        Return: True iff at least one VERIFY_FAILED row exists for (table, year).
+        """
+        sql = (
+            f"SELECT 1 AS n FROM {self._archive_table()} "
+            f"WHERE table_name = {sql_quote(table)} AND year = {int(year)} "
+            f"AND status = 'VERIFY_FAILED' LIMIT 1"
+        )
+        return bool(self._spark.sql(sql).collect())

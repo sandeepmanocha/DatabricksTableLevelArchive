@@ -14,7 +14,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, TypedDict
 
-from src.exceptions import ArchiveConfigError, ArchiveError
+from src.exceptions import ArchiveConfigError, ArchiveError, ArchiveOperationError
 
 try:
     from pyspark.sql.utils import AnalysisException as _AnalysisException  # type: ignore[import-untyped]
@@ -114,6 +114,17 @@ def build_full_table_name(catalog, schema, table) -> str:
     return f"{catalog}.{schema}.{table}"
 
 
+def table_base_name(fq: str) -> str:
+    """
+    Description: Return the last dot-separated segment of a table identifier, stripped.
+    Parameters: fq: maybe-qualified table name (catalog.schema.table or plain table)
+    Return: Trailing table segment, stripped; empty string when fq is falsy.
+    """
+    if not fq:
+        return ""
+    return fq.strip().split(".")[-1].strip()
+
+
 def create_schema_if_not_exists(spark, catalog, schema) -> None:
     """
     Description: Run CREATE SCHEMA IF NOT EXISTS for a validated catalog and schema.
@@ -125,20 +136,238 @@ def create_schema_if_not_exists(spark, catalog, schema) -> None:
     spark.sql(f"CREATE SCHEMA IF NOT EXISTS {catalog}.{schema}")
 
 
-def archive_folder_exists(dbutils, base_path, table_name, year) -> bool:
+_NOT_A_DELTA_TABLE_FRAGMENTS = (
+    "is not a Delta table",
+    "is not a delta table",
+    "DELTA_MISSING_DELTA_TABLE",
+    "DELTA_MISSING_TRANSACTION_LOG",
+    "missing transaction log",
+    "not a valid Delta table",
+    "not a valid delta table",
+)
+
+
+def _classify_delta_probe_exception(exc: Exception) -> str | None:
+    # PATH_NOT_FOUND -> missing; DELTA_MISSING_DELTA_TABLE / "is not a Delta
+    # table" -> orphan; anything else (e.g. PERMISSION_DENIED) -> None so the
+    # caller re-raises with the original diagnostic intact.
+    if ArchiveError.is_not_found(exc):
+        return "archive_folder_missing"
+    if any(f in str(exc) for f in _NOT_A_DELTA_TABLE_FRAGMENTS):
+        return "archive_folder_orphan"
+    return None
+
+
+def calculate_eligible_years(
+    spark,
+    source_table: str,
+    wm_col: str,
+    exclusion_clause,
+    configured_years,
+    retention_year_boundary: int,
+) -> list[int]:
     """
-    Description: Return whether the archive year folder exists on the filesystem.
-    Parameters: dbutils: workspace file system API; base_path: archive root; table_name: table; year: year
-    Return: True if the path lists successfully, False if missing, else re-raises
+    Description: List watermark years eligible for archive or delete.
+
+        When ``configured_years`` is a non-empty iterable, returns that list as
+        ints (configured list wins; no source scan). Otherwise queries the
+        source for distinct YEAR(wm_col) values where wm_col IS NOT NULL and
+        (optionally) the exclusion_clause predicate, and returns those at or
+        before ``retention_year_boundary`` (inclusive), sorted ascending.
+    Parameters:
+        spark: Spark session
+        source_table: fully-qualified source table name (catalog.schema.table)
+        wm_col: watermark column name on source_table
+        exclusion_clause: optional SQL predicate applied with no alias; pass
+            None or empty string to skip
+        configured_years: optional explicit year list — a non-empty iterable
+            short-circuits the source scan
+        retention_year_boundary: maximum year (inclusive) returned from the
+            source scan
+    Return: sorted list[int] of eligible years.
+    Raises:
+        ArchiveConfigError: when ``wm_col`` or ``source_table`` fail identifier validation.
+        ArchiveOperationError: when a returned row cannot be parsed as an int year.
     """
+    if configured_years:
+        return [int(y) for y in configured_years]
+    validate_identifier(wm_col, field="watermark_column")
+    validate_fq_identifier(source_table, field="source_table")
+    where = f"{wm_col} IS NOT NULL"
+    if exclusion_clause:
+        where = f"{where} AND ({exclusion_clause})"
+    sql = (
+        f"SELECT DISTINCT YEAR({wm_col}) AS yr FROM {source_table} "
+        f"WHERE {where} ORDER BY yr"
+    )
+    rows = spark.sql(sql).collect()
+    years: list[int] = []
+    for r in rows:
+        try:
+            # Prefer attribute access for Spark Row / test-harness mocks where
+            # MagicMock(yr=2018) stores the value as an attribute. Dict-like
+            # rows fall through to row_value() which honours asDict/__getitem__.
+            if isinstance(r, dict):
+                yv = int(r["yr"])
+            else:
+                attr = getattr(r, "yr", None)
+                if isinstance(attr, (int, float)) and not isinstance(attr, bool):
+                    yv = int(attr)
+                else:
+                    yv = int(row_value(r, "yr"))
+        except (TypeError, ValueError, KeyError) as exc:
+            raise ArchiveOperationError(
+                f"failed to parse year from row: {r!r}",
+                operation="calculate_eligible_years",
+            ) from exc
+        years.append(yv)
+    return [y for y in years if y <= int(retention_year_boundary)]
+
+
+def archive_row_count(spark, base_path: str, table_name: str, year: int) -> int:
+    """
+    Description: Return the row count of the archive Delta table at the built path.
+        The COUNT(*) SQL doubles as the existence/orphan probe: missing paths
+        surface as PATH_NOT_FOUND (caught by ArchiveError.is_not_found), and
+        non-Delta paths raise DELTA_MISSING_DELTA_TABLE which we treat as orphan.
+    Parameters: spark: Spark session; base_path: archive root; table_name: table segment; year: archive year
+    Return: Number of rows from COUNT(*), or 0 when the count query returns no row
+    Raises:
+        ArchiveOperationError: When the archive folder is missing or not a valid Delta table.
+    """
+    validate_identifier(table_name, field="table_name")
     path = build_archive_path(base_path, table_name, year)
     try:
-        dbutils.fs.ls(path)
-        return True
+        row = spark.sql(f"SELECT COUNT(*) AS c FROM delta.`{path}`").first()
     except Exception as exc:
-        if ArchiveError.is_not_found(exc):
-            return False
+        reason = _classify_delta_probe_exception(exc)
+        if reason is None:
+            raise
+        raise ArchiveOperationError(
+            ArchiveError.diagnostic_message(
+                "FAILED", reason, table=table_name, year=year, path=path,
+            ),
+            table=table_name,
+            year=year,
+            operation="archive_row_count",
+            reason=reason,
+        ) from exc
+    if row is None:
+        return 0
+    val = row_value(row, "c")
+    if val is None:
+        return 0
+    return int(val)
+
+
+def archive_state_and_count(
+    spark, base_path: str, table_name: str, year: int,
+) -> tuple[str, int]:
+    """
+    Description: Classify the archive slice and return its row count in a single
+        probe, so callers don't have to issue the COUNT(*) SQL twice.
+    Parameters: spark: Spark session; base_path: archive root; table_name: table segment; year: archive year
+    Return: ("VALID", count) when the archive exists and is a valid Delta table
+        (count may be 0); ("MISSING", 0) when the folder does not exist;
+        ("ORPHAN", 0) when the folder exists but is not a Delta table.
+    Raises:
+        ArchiveConfigError: When table_name fails identifier validation.
+        ArchiveOperationError: When archive_row_count raises with any other reason (e.g. operation_failure).
+        Any non-ArchiveOperationError exception from the COUNT(*) SQL (e.g. runtime Spark errors) propagates unchanged per Rule 9.
+    """
+    try:
+        return "VALID", archive_row_count(spark, base_path, table_name, year)
+    except ArchiveOperationError as exc:
+        if exc.reason == "archive_folder_missing":
+            return "MISSING", 0
+        if exc.reason == "archive_folder_orphan":
+            return "ORPHAN", 0
         raise
+
+
+def get_archive_delta_version(spark, base_path, table_name, year) -> int | None:
+    """
+    Description: Return the latest committed Delta version at the archive path,
+        or None when the path is invalid, missing, not a Delta table, has empty
+        history, or returns a non-integer version. DESCRIBE HISTORY is wrapped
+        in an outer SELECT so missing paths surface as PATH_NOT_FOUND (caught
+        here and mapped to None, same as any other error).
+    Parameters: spark: Spark session; base_path: archive root; table_name: table segment; year: archive year
+    Return: Latest version as int, or None if unavailable for any reason above.
+    """
+    try:
+        validate_identifier(table_name, field="table_name")
+    except ArchiveConfigError:
+        return None
+    path = build_archive_path(base_path, table_name, year)
+    try:
+        row = spark.sql(
+            f"SELECT MAX(version) AS v FROM (DESCRIBE HISTORY delta.`{path}`)"
+        ).first()
+    except Exception:
+        return None
+    if row is None:
+        return None
+    v = row_value(row, "v")
+    if v is None:
+        return None
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def get_delta_history_versions_strict(spark, base_path, table_name, year) -> list[int]:
+    """
+    Description: Return all Delta version numbers at the archive path, oldest
+        first. DESCRIBE HISTORY is wrapped in an outer SELECT so missing paths
+        surface as PATH_NOT_FOUND (mapped to archive_folder_missing) and stay
+        distinct from true orphans (archive_folder_orphan).
+    Parameters: spark: Spark session; base_path: archive root; table_name: table segment; year: archive year
+    Return: List of version ints ordered ascending.
+    Raises:
+        ArchiveOperationError: When the path is missing or not a valid Delta table.
+    """
+    validate_identifier(table_name, field="table_name")
+    path = build_archive_path(base_path, table_name, year)
+    sql = (
+        f"SELECT version FROM (DESCRIBE HISTORY delta.`{path}`) "
+        f"ORDER BY version"
+    )
+    try:
+        rows = spark.sql(sql).collect()
+    except Exception as exc:
+        reason = _classify_delta_probe_exception(exc)
+        if reason is None:
+            raise
+        raise ArchiveOperationError(
+            ArchiveError.diagnostic_message(
+                "FAILED", reason, table=table_name, year=year, path=path,
+            ),
+            table=table_name,
+            year=year,
+            operation="get_delta_history_versions_strict",
+            reason=reason,
+        ) from exc
+    versions: list[int] = []
+    for r in rows:
+        v = row_value(r, "version")
+        try:
+            if v is None:
+                raise ValueError("null version")
+            versions.append(int(v))
+        except (TypeError, ValueError) as exc:
+            raise ArchiveOperationError(
+                ArchiveError.diagnostic_message(
+                    "FAILED", "archive_folder_orphan",
+                    table=table_name, year=year, path=path,
+                ),
+                table=table_name,
+                year=year,
+                operation="get_delta_history_versions_strict",
+                reason="archive_folder_orphan",
+            ) from exc
+    return versions
 
 
 def row_value(row, field, default=None) -> Any:

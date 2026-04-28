@@ -58,10 +58,12 @@ table_config = _payload["table_config"]
 archive_run_id = _payload["archive_run_id"]
 config_table = _payload["config_table"]
 dry_run = bool(_payload.get("dry_run", True))
+_delete_after = "yes" if table_config.get("delete_after_archive") else "no"
 
 print(f"table_id: {table_config.get('table_id', '?')}")
 print(f"archive_run_id: {archive_run_id}")
 print(f"dry_run: {dry_run}")
+print(f"delete_after_archive: {_delete_after}")
 
 # COMMAND ----------
 configure_logging(archive_run_id)
@@ -85,12 +87,13 @@ result = engine.run(
 )
 
 
-def _md_summary(report: dict, tid: str, *, dry: bool) -> str:
+def _md_summary(report: dict, tid: str, *, dry: bool, delete_after: str) -> str:
     lines = [
         "## Archive Summary",
         f"- **table_id**: {tid}",
         f"- **archive_run_id**: {archive_run_id}",
         f"- **dry_run**: {dry}",
+        f"- **delete_after_archive**: {delete_after}",
         "",
     ]
     tdata = report.get("tables", {}).get(tid, {})
@@ -107,8 +110,8 @@ def _md_summary(report: dict, tid: str, *, dry: bool) -> str:
                 f"| {s.get('null_date_count', '')} |"
             )
     else:
-        lines.append("| Year | Status | Records |")
-        lines.append("|------|--------|---------|")
+        lines.append("| Year | Status | Records (this run) |")
+        lines.append("|------|--------|--------------------|")
         for yr in sorted(years.keys()):
             s = years[yr]
             lines.append(
@@ -121,4 +124,4 @@ def _md_summary(report: dict, tid: str, *, dry: bool) -> str:
 # COMMAND ----------
 _tid = table_config.get("table_id", "?")
 _log.info("run_archive complete for %s dry_run=%s", _tid, dry_run)
-print(_md_summary(result, _tid, dry=dry_run))
+print(_md_summary(result, _tid, dry=dry_run, delete_after=_delete_after))

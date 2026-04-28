@@ -7,11 +7,14 @@ bundle:
 
 include:
   - resources/archive_job.yml
+  - resources/delete_source_after_archive_job.yml
   - resources/rehydrate_job.yml
   - resources/setup_job.yml
   - resources/scanner_job.yml
   - resources/seed_config_job.yml
   - resources/generate_test_data_job.yml
+  - resources/delete_archived_slice_job.yml
+  - resources/rollback_archived_slice_job.yml
 
 variables:
   config_catalog:
@@ -132,6 +135,19 @@ targets:
                 task:
                   task_key: run_archive_iteration
                   job_cluster_key: default
+        caresource_delete_source_after_archive:
+          job_clusters:
+            - job_cluster_key: default
+              new_cluster: ${var.shared_new_cluster}
+          tasks:
+            - task_key: generate_parameters
+              job_cluster_key: default
+            - task_key: run_delete_source_after_archive
+              for_each_task:
+                inputs: "{{tasks.generate_parameters.values.delete_source_after_archive_task_inputs}}"
+                task:
+                  task_key: run_delete_source_after_archive_iteration
+                  job_cluster_key: default
         caresource_rehydrate:
           job_clusters:
             - job_cluster_key: default
@@ -161,6 +177,26 @@ targets:
               new_cluster: ${var.shared_new_cluster}
           tasks:
             - task_key: generate_data
+              job_cluster_key: default
+        caresource_delete_archived_slice:
+          job_clusters:
+            - job_cluster_key: default
+              new_cluster: ${var.shared_new_cluster}
+          tasks:
+            - task_key: generate_parameters
+              job_cluster_key: default
+            - task_key: run_delete_archived_slice
+              for_each_task:
+                inputs: "{{tasks.generate_parameters.values.delete_archived_slice_task_inputs}}"
+                task:
+                  task_key: run_delete_archived_slice_iteration
+                  job_cluster_key: default
+        caresource_rollback_archived_slice:
+          job_clusters:
+            - job_cluster_key: default
+              new_cluster: ${var.shared_new_cluster}
+          tasks:
+            - task_key: run_rollback_archived_slice
               job_cluster_key: default
 
   # ── QA ─────────────────────────────────────────────────────────────────────

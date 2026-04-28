@@ -241,12 +241,12 @@ def test_log_dry_run_sets_status_and_conditions(audit_logger):
         would_archive=50,
         per_condition_counts=counts,
         null_date_count=2,
-        action="CREATE",
+        action="WOULD_ARCHIVE",
     )
     sql = mock_spark.sql.call_args[0][0]
     assert "DRY_RUN" in sql
     payload = {
-        "action": "CREATE",
+        "action": "WOULD_ARCHIVE",
         "per_condition_counts": counts,
         "total_eligible": 100,
         "would_archive": 50,
@@ -345,6 +345,78 @@ def test_aud_archive_audit_columns_include_new_fields():
     assert "watermark_value" in ARCHIVE_AUDIT_COLUMNS
     assert "source_year_count" in ARCHIVE_AUDIT_COLUMNS
     assert "archive_mode" in ARCHIVE_AUDIT_COLUMNS
+
+
+def test_allowed_archive_statuses_include_recovery_archive_deleted_and_rolled_back():
+    assert "RECOVERY_ARCHIVE_DELETED" in ALLOWED_ARCHIVE_STATUSES
+    assert "RECOVERY_ARCHIVE_ROLLED_BACK" in ALLOWED_ARCHIVE_STATUSES
+
+
+def test_archive_success_statuses_include_rolled_back_not_archive_deleted():
+    assert "RECOVERY_ARCHIVE_ROLLED_BACK" in ARCHIVE_SUCCESS_STATUSES
+    assert "RECOVERY_ARCHIVE_DELETED" not in ARCHIVE_SUCCESS_STATUSES
+
+
+def test_archive_audit_columns_needs_review_and_delta_version_last_after_created_at():
+    assert ARCHIVE_AUDIT_COLUMNS[-2:] == ["needs_review", "archive_delta_version"]
+    created_idx = ARCHIVE_AUDIT_COLUMNS.index("created_at")
+    assert ARCHIVE_AUDIT_COLUMNS[created_idx + 1] == "needs_review"
+    assert ARCHIVE_AUDIT_COLUMNS[created_idx + 2] == "archive_delta_version"
+
+
+def test_log_archive_needs_review_and_delta_version_set(audit_logger):
+    _ctx, log, mock_spark = audit_logger
+    mock_spark.reset_mock()
+    log.log_archive(
+        table="t",
+        year=2020,
+        status="ARCHIVED",
+        record_count=100,
+        needs_review=True,
+        archive_delta_version=42,
+    )
+    sql = mock_spark.sql.call_args[0][0]
+    assert sql.rstrip().endswith("true, 42)")
+
+
+def test_log_archive_defaults_needs_review_false_and_null_delta_version(audit_logger):
+    _ctx, log, mock_spark = audit_logger
+    mock_spark.reset_mock()
+    log.log_archive(
+        table="t",
+        year=2020,
+        status="ARCHIVED",
+        record_count=100,
+    )
+    sql = mock_spark.sql.call_args[0][0]
+    assert sql.rstrip().endswith("false, NULL)")
+
+
+def test_log_verify_failed_sets_needs_review_true(audit_logger):
+    _ctx, log, mock_spark = audit_logger
+    mock_spark.reset_mock()
+    log.log_verify_failed(
+        table="t",
+        year=2020,
+        archive_count=10,
+        source_count=20,
+    )
+    insert_sql = mock_spark.sql.call_args_list[0][0][0]
+    assert insert_sql.rstrip().endswith("true, NULL)")
+
+
+def test_log_dry_run_sets_needs_review_false(audit_logger):
+    _ctx, log, mock_spark = audit_logger
+    mock_spark.reset_mock()
+    log.log_dry_run(
+        table="c.s.t",
+        year=2019,
+        total_eligible=100,
+        would_archive=50,
+        per_condition_counts={"cond_a": 10},
+    )
+    insert_sql = mock_spark.sql.call_args_list[0][0][0]
+    assert insert_sql.rstrip().endswith("false, NULL)")
 
 
 def test_aud_log_archive_with_watermark_fields(audit_logger):
@@ -570,3 +642,233 @@ def test_get_last_run_state_uses_success_statuses(audit_logger):
     for status in ARCHIVE_SUCCESS_STATUSES:
         assert status in sql
     assert "FAILED" not in sql.split("IN")[1]
+
+
+def test_check_concurrent_any_year_not_busy_when_no_rows(audit_logger):
+    _ctx, log, mock_spark = audit_logger
+    out_df = MagicMock()
+    out_df.collect.return_value = []
+    mock_spark.sql.return_value = out_df
+    got = log.check_concurrent_any_year("a.b.c", "run-self")
+    assert got == (False, None, None, None)
+    sql = mock_spark.sql.call_args[0][0]
+    assert "table_name" in sql
+    assert "s.year" in sql and "SELECT s.archive_run_id, s.year" in sql
+    assert "AND s.year =" not in sql
+
+
+def test_check_concurrent_any_year_busy_when_fresh_foreign_started(audit_logger):
+    fixed = datetime(2026, 4, 7, 12, 0, 0, tzinfo=timezone.utc)
+    created = fixed - timedelta(hours=1)
+    _ctx, log, mock_spark = audit_logger
+    out_df = MagicMock()
+    out_df.collect.return_value = [
+        {
+            "archive_run_id": "foreign-run",
+            "year": 2019,
+            "created_at": created,
+        }
+    ]
+    mock_spark.sql.return_value = out_df
+    with patch("src.audit._utc_now", return_value=fixed):
+        got = log.check_concurrent_any_year("a.b.c", "run-self", stale_threshold_hours=4)
+    assert got[0] is True
+    assert got[1] == "foreign-run"
+    assert got[2] == 2019
+    assert got[3] == pytest.approx(1.0)
+
+
+def test_check_concurrent_any_year_stale_is_not_busy(audit_logger):
+    fixed = datetime(2026, 4, 7, 12, 0, 0, tzinfo=timezone.utc)
+    created = fixed - timedelta(hours=10)
+    _ctx, log, mock_spark = audit_logger
+    out_df = MagicMock()
+    out_df.collect.return_value = [
+        {
+            "archive_run_id": "foreign-run",
+            "year": 2019,
+            "created_at": created,
+        }
+    ]
+    mock_spark.sql.return_value = out_df
+    with patch("src.audit._utc_now", return_value=fixed):
+        got = log.check_concurrent_any_year("a.b.c", "run-self", stale_threshold_hours=4)
+    assert got[0] is False
+    assert got[1] == "foreign-run"
+    assert got[2] == 2019
+    assert got[3] == pytest.approx(10.0)
+
+
+def test_is_eligible_for_delete_returns_true_when_all_checks_pass(audit_logger):
+    _ctx, log, mock_spark = audit_logger
+    sql_calls = {"count": 0}
+
+    def sql_side_effect(q):
+        sql_calls["count"] += 1
+        out_df = MagicMock()
+        if sql_calls["count"] == 1:
+            out_df.collect.return_value = [
+                {
+                    "status": "ARCHIVED",
+                    "watermark_value": date(2020, 12, 31),
+                    "source_year_count": 100,
+                }
+            ]
+        elif sql_calls["count"] == 2:
+            out_df.collect.return_value = []
+        else:
+            out_df.collect.return_value = []
+        return out_df
+
+    mock_spark.sql.side_effect = sql_side_effect
+    got = log.is_eligible_for_delete("a.b.c", 2020, archive_run_id="run-self")
+    assert got == (True, None)
+
+
+def test_is_eligible_for_delete_fails_when_last_status_not_archived(audit_logger):
+    _ctx, log, mock_spark = audit_logger
+    out_df = MagicMock()
+    out_df.collect.return_value = [
+        {
+            "status": "ARCHIVED_AND_DELETED",
+            "watermark_value": date(2020, 12, 31),
+            "source_year_count": 100,
+        }
+    ]
+    mock_spark.sql.return_value = out_df
+    got = log.is_eligible_for_delete("a.b.c", 2020, archive_run_id="run-self")
+    assert got == (False, "not_archived_state")
+
+
+def test_is_eligible_for_delete_fails_when_concurrent_foreign_run(audit_logger):
+    fixed = datetime(2026, 4, 7, 12, 0, 0, tzinfo=timezone.utc)
+    _ctx, log, mock_spark = audit_logger
+    sql_calls = {"count": 0}
+
+    def sql_side_effect(q):
+        sql_calls["count"] += 1
+        out_df = MagicMock()
+        if sql_calls["count"] == 1:
+            out_df.collect.return_value = [
+                {
+                    "status": "ARCHIVED",
+                    "watermark_value": date(2020, 12, 31),
+                    "source_year_count": 100,
+                }
+            ]
+        elif sql_calls["count"] == 2:
+            out_df.collect.return_value = [
+                {
+                    "archive_run_id": "foreign-run",
+                    "created_at": fixed - timedelta(hours=1),
+                }
+            ]
+        else:
+            out_df.collect.return_value = []
+        return out_df
+
+    mock_spark.sql.side_effect = sql_side_effect
+    with patch("src.audit._utc_now", return_value=fixed):
+        got = log.is_eligible_for_delete("a.b.c", 2020, archive_run_id="run-self")
+    assert got == (False, "concurrent_foreign_run")
+
+
+def test_is_eligible_for_delete_fails_when_verify_failed_row_present(audit_logger):
+    _ctx, log, mock_spark = audit_logger
+    sql_calls = {"count": 0}
+
+    def sql_side_effect(q):
+        sql_calls["count"] += 1
+        out_df = MagicMock()
+        if sql_calls["count"] == 1:
+            out_df.collect.return_value = [
+                {
+                    "status": "ARCHIVED",
+                    "watermark_value": date(2020, 12, 31),
+                    "source_year_count": 100,
+                }
+            ]
+        elif sql_calls["count"] == 2:
+            out_df.collect.return_value = []
+        elif sql_calls["count"] == 3:
+            out_df.collect.return_value = [{"n": 1}]
+        else:
+            out_df.collect.return_value = []
+        return out_df
+
+    mock_spark.sql.side_effect = sql_side_effect
+    got = log.is_eligible_for_delete("a.b.c", 2020, archive_run_id="run-self")
+    assert got == (False, "verify_failed_present")
+
+
+def test_get_prior_archived_run_returns_tuple(audit_logger):
+    _ctx, log, mock_spark = audit_logger
+    created = datetime(2026, 4, 1, 9, 0, 0, tzinfo=timezone.utc)
+    out_df = MagicMock()
+    out_df.collect.return_value = [
+        {"archive_run_id": "run-xyz", "created_at": created}
+    ]
+    mock_spark.sql.return_value = out_df
+    got = log.get_prior_archived_run("a.b.c", 2020)
+    assert got == ("run-xyz", created)
+    sql = mock_spark.sql.call_args[0][0]
+    assert "status = 'ARCHIVED'" in sql
+    assert "ORDER BY created_at DESC" in sql
+    assert "LIMIT 1" in sql
+
+
+def test_get_prior_archived_run_returns_none_when_no_row(audit_logger):
+    _ctx, log, mock_spark = audit_logger
+    out_df = MagicMock()
+    out_df.collect.return_value = []
+    mock_spark.sql.return_value = out_df
+    assert log.get_prior_archived_run("a.b.c", 2020) is None
+
+
+def test_log_dry_run_rejects_disallowed_action(audit_logger):
+    _ctx, log, _mock_spark = audit_logger
+    with pytest.raises(ArchiveConfigError, match="Invalid dry-run action"):
+        log.log_dry_run(
+            table="c.s.t",
+            year=2019,
+            total_eligible=100,
+            would_archive=50,
+            per_condition_counts={},
+            action="DELETE",
+        )
+
+
+def test_log_dry_run_accepts_canonical_actions(audit_logger):
+    _ctx, log, mock_spark = audit_logger
+    for action in (
+        "WOULD_ARCHIVE",
+        "WOULD_APPEND",
+        "WOULD_DELETE",
+        "SKIP_NOT_ELIGIBLE",
+        "SKIP_CONCURRENT",
+        "SKIP_DRIFT",
+    ):
+        mock_spark.reset_mock()
+        log.log_dry_run(
+            table="c.s.t",
+            year=2019,
+            total_eligible=1,
+            would_archive=1,
+            per_condition_counts={},
+            action=action,
+        )
+        mock_spark.sql.assert_called_once()
+
+
+def test_log_dry_run_allows_none_action(audit_logger):
+    _ctx, log, mock_spark = audit_logger
+    mock_spark.reset_mock()
+    log.log_dry_run(
+        table="c.s.t",
+        year=2019,
+        total_eligible=1,
+        would_archive=1,
+        per_condition_counts={},
+        action=None,
+    )
+    mock_spark.sql.assert_called_once()

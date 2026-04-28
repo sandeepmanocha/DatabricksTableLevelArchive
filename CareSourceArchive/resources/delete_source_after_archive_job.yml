@@ -1,0 +1,48 @@
+# CareSource Archive — Delete-Source-After-Archive job:
+# generate_parameters (job_mode=delete) → run_delete_source_after_archive per table_config.
+# Removes source rows for slices already in audit state ARCHIVED. Orthogonal to the main archive job.
+# Compute-neutral: cluster or serverless is determined per-target in databricks.yml.
+
+resources:
+  jobs:
+    caresource_delete_source_after_archive:
+      name: caresource-delete-source-after-archive
+      run_as:
+        service_principal_name: ${var.job_run_as_service_principal}
+      parameters:
+        - name: config_table
+          default: ""
+        - name: dry_run
+          default: "true"
+        - name: table_config_filter
+          default: ""
+        - name: source_catalog
+          default: ""
+        - name: source_schema
+          default: ""
+        - name: years
+          default: ""
+      tasks:
+        - task_key: generate_parameters
+          notebook_task:
+            notebook_path: ../notebooks/generate_parameters.py
+            base_parameters:
+              config_table: "{{job.parameters.config_table}}"
+              dry_run: "{{job.parameters.dry_run}}"
+              table_config_filter: "{{job.parameters.table_config_filter}}"
+              source_catalog: "{{job.parameters.source_catalog}}"
+              source_schema: "{{job.parameters.source_schema}}"
+              job_mode: "delete"
+              years: "{{job.parameters.years}}"
+        - task_key: run_delete_source_after_archive
+          depends_on:
+            - task_key: generate_parameters
+          for_each_task:
+            concurrency: ${var.archive_foreach_concurrency}
+            inputs: "{{tasks.generate_parameters.values.delete_source_after_archive_task_inputs}}"
+            task:
+              task_key: run_delete_source_after_archive_iteration
+              notebook_task:
+                notebook_path: ../notebooks/delete_source_after_archive.py
+                base_parameters:
+                  foreach_payload: "{{input}}"

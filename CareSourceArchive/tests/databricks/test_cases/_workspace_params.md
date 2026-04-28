@@ -2,12 +2,12 @@
 
 Before running any test, **ask the user** for:
 
-| Parameter | Example |
-|---|---|
-| `PROFILE` | `DEFAULT`, `fe-sandbox-manocha` |
-| `TARGET` | `dev`, `dev-serverless` |
-| `SOURCE_CATALOG` | `sandeep_manocha` |
-| `SOURCE_SCHEMA` | `source_data_samples` |
+| Parameter | Example | Current |
+|---|---|---|
+| `PROFILE` | `DEFAULT`, `fe-sandbox-manocha` | `fe-sandbox-manocha` |
+| `TARGET` | `dev`, `dev-serverless` | `dev-serverless` |
+| `SOURCE_CATALOG` | `sandeep_manocha` | `dev2_archive` |
+| `SOURCE_SCHEMA` | `source_data_samples` | `source_data_samples` |
 
 All other values derive from these (config tables live under `<SOURCE_CATALOG>.caresource_audit` or a metadata schema the user specifies).
 

@@ -1,5 +1,192 @@
 # 01 — Setup & Deploy Results
 
+## Run — 2026-04-27 22:28 CDT
+
+**TL;DR:** Bundle validate + deploy + 3 jobs (setup, seed, generate_test_data) all PASS on `dev-serverless` after the post-fix + post-cleanup branch lands. Source row counts match (claims=5000, members=3000, providers=1000). Phase-5 integration sweep gate cleared.
+
+**Branch:** `feat/delta_config_build_v12_archive_refactor` (commit `a089564` — fix + cleanup commits 8ed36b9 → be97efc + progress report)
+**Profile / Target:** `fe-sandbox-manocha` / `dev-serverless` (test case substitutions: `--profile DEFAULT` → `--profile fe-sandbox-manocha`; `-t dev` → `-t dev-serverless`; `sandeep_manocha` → `dev2_archive`)
+**Workspace:** https://fe-sandbox-manocha.cloud.databricks.com
+**Audit schema:** `dev2_archive.metadata`
+**Source schema:** `dev2_archive.source_data_samples`
+
+### Steps
+
+| # | Step | Result | Run URL |
+|---|------|--------|---------|
+| 1a | `databricks bundle validate -t dev-serverless --profile fe-sandbox-manocha` | PASS — `Validation OK!` | — |
+| 1b | `databricks bundle deploy -t dev-serverless --profile fe-sandbox-manocha` | PASS — `Deployment complete!` (~8s) | — |
+| 2 | `bundle run setup_config_tables` | PASS — `TERMINATED SUCCESS` (49s) | https://fe-sandbox-manocha.cloud.databricks.com/?o=7474658872313088#job/1101405823713360/run/842978451851861 |
+| 3 | `bundle run seed_config` | PASS — `TERMINATED SUCCESS` (33s) | https://fe-sandbox-manocha.cloud.databricks.com/?o=7474658872313088#job/158427896062706/run/447400913606860 |
+| 4 | `bundle run generate_test_data --params catalog="dev2_archive",schema="source_data_samples"` | PASS — `TERMINATED SUCCESS` (61s) | https://fe-sandbox-manocha.cloud.databricks.com/?o=7474658872313088#job/857878464319321/run/336523316298708 |
+| 5 | Source row counts | PASS — `claims=5000, members=3000, providers=1000` (matches test-case expected `~5,000 / ~3,000 / ~1,000`) | — |
+
+### What Happened
+
+Clean phase-5 entry. The deployed bundle ships the post-fix + post-cleanup `src/archiver.py` (now with `ArchiveBase`) + new `src/delete_job.py` + tightened docstrings. No bundle-validation issues from the new module. Generate-test-data step caps wall time at ~1m on serverless.
+
+### Next Steps
+
+Proceed to 02T (scanner first run).
+
+---
+
+## Run — 2026-04-27 08:13 CDT
+
+**TL;DR:** Full setup + deploy on `dev-serverless` passed cleanly. Bundle deployed in 10s, 3 jobs run (setup ~62s, seed + generate_test_data in parallel ~85s wall). Schema_templates seeded with the 5-pattern `[event_date, start_time, query_date, start_date, effective_date]` set (intentional, per user). All source counts/date ranges match expected. All steps PASS.
+
+**Branch:** `feat/delta_config_build_v10_test_cases` (commit `74f10cb`)
+**Profile:** `fe-sandbox-manocha`
+**Workspace:** https://fe-sandbox-manocha.cloud.databricks.com
+**Bundle target:** `dev-serverless`
+**Config catalog/schema:** `dev2_archive.metadata`
+**Source schema:** `dev2_archive.source_data_samples`
+**Run-as SP:** `44edd08d-b71a-4e29-a01b-4881be31a144` (`caresource-archive-dev`)
+
+**Notes on test case:**
+1. `01T_setup_and_deploy.md` Step 3 lists `databricks bundle run setup_config_tables` but the prose says "run the seed_config notebook." Treated as a known typo (same interpretation as the 2026-04-24 run) — executed `databricks bundle run seed_config` instead. `seed_config`'s notebook does `INSERT INTO`, so running `setup_config_tables` twice would either no-op the second time or fail; the two are not interchangeable.
+2. **Watermark patterns deviate from the test's expected output (intentional).** `01T` expects `watermark_column_patterns = ['event_date', 'start_time', 'query_date']` (3 patterns from the original `notebooks/seed_config.py`). Actual seeded value is `['event_date', 'start_time', 'query_date', 'start_date', 'effective_date']` (5 patterns). This is because `notebooks/seed_config.py` carries an uncommitted edit that widens the array to support `members.start_date` and `providers.effective_date`. Per user direction, the edit is intentional and is being kept; the test's expected list is stale and should eventually be updated to match.
+
+### Step 1 — Validate & deploy bundle — **PASS**
+
+```bash
+databricks bundle validate -t dev-serverless --profile fe-sandbox-manocha   # Validation OK!
+databricks bundle deploy -t dev-serverless --profile fe-sandbox-manocha     # Deployment complete!
+```
+
+Validate ~1s, deploy ~10s.
+
+### Step 2 — Run `setup_config_tables` — **PASS**
+
+```bash
+databricks bundle run setup_config_tables -t dev-serverless --profile fe-sandbox-manocha
+```
+
+Run URL: https://fe-sandbox-manocha.cloud.databricks.com/?o=7474658872313088#job/1101405823713360/run/760420696321318
+TERMINATED SUCCESS in ~62s. Created 6 expected Delta tables in `dev2_archive.metadata`: `global_settings`, `schema_templates`, `table_configs`, `table_configs_staging`, `archive_audit_log`, `scanner_log`. (Plus `rehydration_audit_log`, which is created by the rehydrate job's first run — not by `setup_config_tables`.)
+
+### Step 3 — Run `seed_config` — **PASS** (with documented deviation on patterns)
+
+```bash
+databricks bundle run seed_config -t dev-serverless --profile fe-sandbox-manocha
+```
+
+Run URL: https://fe-sandbox-manocha.cloud.databricks.com/?o=7474658872313088#job/158427896062706/run/584371585516061
+TERMINATED SUCCESS in ~44s. Ran in parallel with Step 4.
+
+`schema_templates` row written:
+| schema_id | source_catalog | source_schema | watermark_column_patterns | default_retention_years | archive_base_path | DAA | is_active |
+|---|---|---|---|---|---|---|---|
+| `dev2_archive__source_data_samples` | `dev2_archive` | `source_data_samples` | `[event_date, start_time, query_date, start_date, effective_date]` | 0 | `/Volumes/dev2_archive/source_data_samples_archive/sample_data_archive_ext_vol/source_data_samples` | false | true |
+
+`global_settings` = 1 row. `default_retention_years = 0` (testing default — all years eligible).
+
+### Step 4 — Run `generate_test_data` — **PASS**
+
+```bash
+databricks bundle run generate_test_data -t dev-serverless --profile fe-sandbox-manocha
+```
+
+Run URL: https://fe-sandbox-manocha.cloud.databricks.com/?o=7474658872313088#job/857878464319321/run/692847108967617
+TERMINATED SUCCESS in ~85s. Ran in parallel with Step 3.
+
+### Step 5 — Verify tables exist — **PASS**
+
+| Table | Rows | Watermark column | Date range | Distinct years |
+|---|---|---|---|---|
+| `dev2_archive.source_data_samples.claims` | 5000 | event_date | 2018-01-01 → 2025-12-31 | 8 |
+| `dev2_archive.source_data_samples.members` | 3000 | start_date | 2019-01-01 → 2025-12-30 | 7 |
+| `dev2_archive.source_data_samples.providers` | 1000 | effective_date | 2020-01-01 → 2025-12-29 | 6 |
+
+All match expected.
+
+| Audit table | Rows |
+|---|---|
+| `global_settings` | 1 |
+| `schema_templates` | 1 |
+| `table_configs` | 0 (populated by scanner, not seed) |
+| `archive_audit_log` | 0 |
+| `scanner_log` | 0 |
+
+### What Happened
+
+Standard re-setup after `00T` cleanup. Bundle redeployed against `dev-serverless`, jobs created/refreshed, config seeded with intentional 5-pattern watermark array, test data regenerated. Step 3 + Step 4 ran in parallel since they touch disjoint catalogs (metadata vs source). All five expected source counts/date ranges matched first try.
+
+### Next Steps
+
+- Run `caresource-archive-scanner` to populate `table_configs` (3 active tables expected).
+- Then proceed to whichever test the user wants next (e.g. `02T`/`03T`, the archive end-to-end tests, or 30T re-run).
+- Long-term: update `01T_setup_and_deploy.md`'s expected watermark pattern list to the 5-pattern set so the test self-documents the current code.
+
+---
+
+## Run — 2026-04-24 09:16 CDT
+
+**TL;DR:** Full setup + deploy on `dev-serverless` passed cleanly. Bundle deployed in 13s, 3 jobs run (setup ~50s, seed + generate_test_data in parallel ~84s). All expected rows present: global_settings=1, schema_templates=1 with patterns `[event_date, start_time, query_date]`, claims=5000, members=3000, providers=1000.
+
+**Branch:** `feat/delta_config_build_v9_del_data_phase2` (commit `d838774`)
+**Profile:** `fe-sandbox-manocha`
+**Workspace:** https://fe-sandbox-manocha.cloud.databricks.com
+**Bundle target:** `dev-serverless`
+**Config catalog/schema:** `dev2_archive.metadata`
+**Source schema:** `dev2_archive.source_data_samples`
+**Run-as SP:** `44edd08d-b71a-4e29-a01b-4881be31a144` (`caresource-archive-dev`)
+**Note on test case:** Steps 2 and 3 in `01T_setup_and_deploy.md` both list `databricks bundle run setup_config_tables` — step 3 appears to be a documentation typo (the accompanying prose says "Then run the `seed_config` notebook"). This run interpreted it as: setup_config_tables once, then the `seed_config` bundle job. `seed_config`'s notebook does `INSERT INTO`, so running it **before** `setup_config_tables` would fail; the two are not interchangeable.
+
+**Optimization:** `seed_config` and `generate_test_data` are independent of each other, so they were launched in parallel after `setup_config_tables` finished — saving ~50 s of wall time versus running them serially.
+
+### Step 1 — Validate & deploy bundle: **PASS**
+
+```
+databricks bundle validate -t dev-serverless --profile fe-sandbox-manocha
+databricks bundle deploy  -t dev-serverless --profile fe-sandbox-manocha
+```
+
+- Validation: `Validation OK!` (~2s)
+- Deploy: `Deployment complete!` (~13s)
+- Workspace path: `/Workspace/Users/sandeep.manocha@databricks.com/.bundle/caresource-archive/dev-serverless`
+
+### Step 2 — Run `setup_config_tables` (create config Delta tables): **PASS**
+
+- Run URL: https://fe-sandbox-manocha.cloud.databricks.com/?o=7474658872313088#job/1101405823713360/run/967831267879246
+- Duration: ~50s (RUNNING → TERMINATED SUCCESS)
+- Created 7 tables in `dev2_archive.metadata`: `global_settings`, `schema_templates`, `table_configs`, `table_configs_staging`, `archive_audit_log`, `scanner_log`, `rehydration_audit_log`.
+
+### Step 3 — Seed dev config (`seed_config` job): **PASS**
+
+- Run URL: https://fe-sandbox-manocha.cloud.databricks.com/?o=7474658872313088#job/158427896062706/run/65294509216050
+- Duration: ~50s
+- Post-state:
+  - `global_settings` = 1 row
+  - `schema_templates` = 1 row with `schema_id='dev2_archive__source_data_samples'`, `watermark_column_patterns=['event_date','start_time','query_date']`, `archive_base_path='/Volumes/dev2_archive/source_data_samples_archive/sample_data_archive_ext_vol/source_data_samples'`
+  - All values match expected.
+
+### Step 4 — Run `generate_test_data`: **PASS**
+
+- Run URL: https://fe-sandbox-manocha.cloud.databricks.com/?o=7474658872313088#job/857878464319321/run/97094641152588
+- Duration: ~84s (ran in parallel with step 3)
+- Params defaulted from `dev-serverless` target variables: `catalog=dev2_archive`, `schema=source_data_samples`.
+
+### Step 5 — Verify sample tables exist: **PASS**
+
+| Table | Expected (test doc) | Actual |
+|---|---|---|
+| `claims` | ~5,000 (watermark `event_date`, 2018–2025) | 5000 ✓ |
+| `members` | ~3,000 (watermark `start_date`, 2019–2025) | 3000 ✓ |
+| `providers` | ~1,000 (watermark `effective_date`, 2020–2025) | 1000 ✓ |
+
+## What Happened
+
+Bundle validated and deployed successfully. Config tables were created by `setup_config_tables`, then `seed_config` and `generate_test_data` were launched in parallel to minimize wall time — both terminated SUCCESS. Verification queries returned exact expected row counts for all three sample tables. No bundle-sync race this run (contrast to the 2026-04-20 run's notebook+src sync race — files were evidently in place by the time `setup_config_tables` started). Total Databricks wall time for tests 01 setup: ~2.5 min.
+
+## Next Steps
+
+- Fix the step 3 typo in `01T_setup_and_deploy.md`: the command should be `databricks bundle run seed_config` (not a second `setup_config_tables`). Document the dependency: `seed_config` must run **after** `setup_config_tables` because its notebook issues `INSERT INTO` with no `CREATE TABLE`.
+- Document the step 3 + step 4 parallelization opportunity in the test doc to reduce wall time.
+- Proceed to `02T_scanner_first_run`.
+
+---
+
 ## Run — 2026-04-20 04:37 UTC
 
 **TL;DR:** Deploy on `-t dev-serverless` succeeded, but `setup_config_tables` failed because the `dev2_archive` catalog storage root (`s3://manocha-ext-s3-332745928618-emjjan/dev_archive`) has no Unity Catalog external location / storage credential granting S3 access. All subsequent steps SKIPPED (same catalog, same infra blocker). Note: the test case file specifies `-t dev --profile DEFAULT`; this run used `-t dev-serverless --profile fe-sandbox-manocha` per user instruction.

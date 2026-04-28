@@ -109,10 +109,10 @@ def validate_exclusion_conditions(raw, *, table_id=None) -> None:
         ctype = cond["type"]
         if ctype not in ("same_table", "custom_sql"):
             raise ArchiveConfigError(field="exclusion_conditions", table_id=table_id)
-        op = cond["operator"]
-        if op not in _EXCLUSION_OPERATORS:
-            raise ArchiveConfigError(field="exclusion_conditions", table_id=table_id)
         if ctype == "same_table":
+            op = cond["operator"]
+            if op not in _EXCLUSION_OPERATORS:
+                raise ArchiveConfigError(field="exclusion_conditions", table_id=table_id)
             col = cond["column"]
             if col is None or (isinstance(col, str) and not col.strip()):
                 raise ArchiveConfigError(field="exclusion_conditions", table_id=table_id)
@@ -131,11 +131,18 @@ def validate_table_config_dict(d) -> None:
     Return: None
     """
     tid = d.get("table_id")
+    # watermark_column is only meaningful for archive-eligible (active) rows.
+    # Scanner writes inactive rows with watermark_column="" when no column matched
+    # any pattern; those rows must survive reload so scanner re-runs stay idempotent.
+    is_active = bool(d.get("is_active", True))
     for key in _REQUIRED_TABLE_CONFIG_KEYS:
+        if key == "watermark_column" and not is_active:
+            continue
         _require_non_empty_str(d, key, table_id=tid)
-    validate_identifier(
-        d["watermark_column"], field="watermark_column", table_id=tid
-    )
+    if is_active:
+        validate_identifier(
+            d["watermark_column"], field="watermark_column", table_id=tid
+        )
     if "timezone" in d:
         _validate_timezone_string(d.get("timezone"), field="timezone", table_id=tid)
     validate_exclusion_conditions(d.get("exclusion_conditions"), table_id=tid)

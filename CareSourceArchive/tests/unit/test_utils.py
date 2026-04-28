@@ -6,21 +6,27 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from src.exceptions import ArchiveConfigError, ArchiveError
+from src.exceptions import ArchiveConfigError, ArchiveError, ArchiveOperationError
 from src.utils import (
     RunContext,
-    archive_folder_exists,
+    _AnalysisException,
+    _classify_delta_probe_exception,
     archive_path_from_config,
+    archive_row_count,
+    archive_state_and_count,
     build_archive_path,
     build_full_table_name,
     build_insert_values_sql,
     build_multi_insert_values_sql,
+    calculate_eligible_years,
     collect_column,
     configure_logging,
     create_schema_if_not_exists,
     ensure_table_exists,
     ensure_table_with_setup_message,
     generate_archive_run_id,
+    get_archive_delta_version,
+    get_delta_history_versions_strict,
     is_safe_identifier,
     row_to_dict,
     row_value,
@@ -78,29 +84,6 @@ class TestCreateSchemaIfNotExists:
         mock_spark.sql.assert_called_once_with(
             "CREATE SCHEMA IF NOT EXISTS my_cat.my_sch"
         )
-
-
-class TestArchiveFolderExists:
-    def test_true_when_ls_succeeds(self):
-        dbutils = MagicMock()
-        dbutils.fs.ls.return_value = [MagicMock()]
-        assert archive_folder_exists(dbutils, "/b", "tbl", 2020) is True
-        dbutils.fs.ls.assert_called_once_with("/b/tbl/year_2020")
-
-    def test_false_when_path_not_found(self):
-        dbutils = MagicMock()
-        dbutils.fs.ls.side_effect = Exception(
-            "java.io.FileNotFoundException: /b/tbl/year_2021"
-        )
-        assert archive_folder_exists(dbutils, "/b", "tbl", 2021) is False
-
-    def test_raises_on_non_not_found_error(self):
-        dbutils = MagicMock()
-        dbutils.fs.ls.side_effect = Exception(
-            "PERMISSION_DENIED: User does not have READ VOLUME"
-        )
-        with pytest.raises(Exception, match="PERMISSION_DENIED"):
-            archive_folder_exists(dbutils, "/b", "tbl", 2021)
 
 
 class _FakeRow:
@@ -451,3 +434,328 @@ class TestSqlDateOrNull:
         assert sql_date_or_null(None) == "NULL"
         assert sql_date_or_null(date(2025, 1, 1)) == "DATE '2025-01-01'"
         assert sql_date_or_null(datetime(2025, 1, 1, 15, 30, 0)) == "DATE '2025-01-01'"
+
+
+class TestArchiveRowCount:
+    def test_valid_delta_returns_count(self, mock_spark):
+        expected_path = "/base/my_table/year_2024"
+        count_df = MagicMock()
+        count_df.first.return_value = _FakeRow({"c": 42})
+
+        def sql_side_effect(sql: str):
+            assert f"delta.`{expected_path}`" in sql
+            assert "COUNT(*)" in sql and "AS c" in sql
+            return count_df
+
+        mock_spark.sql.side_effect = sql_side_effect
+        assert archive_row_count(mock_spark, "/base", "my_table", 2024) == 42
+        assert mock_spark.sql.call_count == 1
+
+    def test_missing_folder_raises_archive_operation_error(self, mock_spark):
+        expected_path = "/base/t/year_2020"
+
+        def sql_side_effect(sql: str):
+            assert f"delta.`{expected_path}`" in sql
+            assert "COUNT(*)" in sql
+            raise _AnalysisException(f"PATH_NOT_FOUND: {expected_path}")
+
+        mock_spark.sql.side_effect = sql_side_effect
+        with pytest.raises(ArchiveOperationError) as exc_info:
+            archive_row_count(mock_spark, "/base", "t", 2020)
+        assert exc_info.value.reason == "archive_folder_missing"
+        msg = str(exc_info.value)
+        assert "archive_folder_missing" not in msg
+        assert "t" in msg
+        assert "2020" in msg
+        assert expected_path in msg
+
+    def test_orphan_folder_raises_archive_operation_error(self, mock_spark):
+        mock_spark.sql.side_effect = _AnalysisException("is not a Delta table")
+        with pytest.raises(ArchiveOperationError) as exc_info:
+            archive_row_count(mock_spark, "/b", "orphan_tbl", 2019)
+        assert exc_info.value.reason == "archive_folder_orphan"
+        msg = str(exc_info.value)
+        assert "archive_folder_orphan" not in msg
+        assert "orphan_tbl" in msg
+        assert "2019" in msg
+
+    def test_delta_missing_delta_table_classified_as_orphan(self, mock_spark):
+        # Regression for 25T: on modern DBR a SELECT COUNT(*) against a path
+        # that exists but lacks a Delta log surfaces as DELTA_MISSING_DELTA_TABLE.
+        # That is a true orphan. Missing paths raise PATH_NOT_FOUND instead
+        # (covered by test_missing_folder_raises_archive_operation_error).
+        mock_spark.sql.side_effect = _AnalysisException(
+            "[DELTA_MISSING_DELTA_TABLE] `/x/y/z` is not a Delta table."
+        )
+        with pytest.raises(ArchiveOperationError) as exc_info:
+            archive_row_count(mock_spark, "/b", "t", 2018)
+        assert exc_info.value.reason == "archive_folder_orphan"
+
+    def test_count_first_none_returns_zero(self, mock_spark):
+        count_df = MagicMock()
+        count_df.first.return_value = None
+        mock_spark.sql.return_value = count_df
+        assert archive_row_count(mock_spark, "/x", "tbl", 2021) == 0
+
+    def test_invalid_table_name_raises_config_error(self, mock_spark):
+        bad_table = "bad`name"
+        with pytest.raises(ArchiveConfigError):
+            archive_row_count(mock_spark, "/base", bad_table, 2024)
+        mock_spark.sql.assert_not_called()
+
+
+class TestArchiveStateAndCount:
+    def test_valid_archive_returns_valid_and_count(self, mock_spark):
+        count_df = MagicMock()
+        count_df.first.return_value = _FakeRow({"c": 10})
+        mock_spark.sql.return_value = count_df
+        assert archive_state_and_count(mock_spark, "/p", "tbl", 2022) == ("VALID", 10)
+        # Single SQL probe — no separate classify query.
+        assert mock_spark.sql.call_count == 1
+
+    def test_missing_folder_returns_missing_zero(self, mock_spark):
+        mock_spark.sql.side_effect = _AnalysisException(
+            "java.io.FileNotFoundException: /missing",
+        )
+        assert archive_state_and_count(mock_spark, "/p", "tbl", 2022) == ("MISSING", 0)
+
+    def test_orphan_folder_returns_orphan_zero(self, mock_spark):
+        mock_spark.sql.side_effect = _AnalysisException("is not a Delta table")
+        assert archive_state_and_count(mock_spark, "/p", "tbl", 2022) == ("ORPHAN", 0)
+
+    def test_invalid_table_name_raises_config_error(self, mock_spark):
+        with pytest.raises(ArchiveConfigError):
+            archive_state_and_count(mock_spark, "/p", "bad`name", 2022)
+        mock_spark.sql.assert_not_called()
+
+    def test_unexpected_operation_error_propagates(self, mock_spark):
+        err = ArchiveOperationError(
+            "synthetic", table="tbl", year=2022,
+            operation="archive_row_count", reason="unexpected_reason",
+        )
+        with pytest.MonkeyPatch.context() as mp:
+            def _raise(*args, **kwargs):
+                raise err
+
+            mp.setattr("src.utils.archive_row_count", _raise)
+            with pytest.raises(ArchiveOperationError) as ei:
+                archive_state_and_count(mock_spark, "/p", "tbl", 2022)
+            assert ei.value.reason == "unexpected_reason"
+
+
+class TestClassifyDeltaProbeException:
+    def test_classify_delta_probe_exception_recognises_missing_transaction_log_uppercase(self):
+        # Empty archive folder fixture (12T phase 2c): Spark surfaces
+        # [DELTA_MISSING_TRANSACTION_LOG] when _delta_log is missing or empty.
+        # That is a true orphan, same shape as DELTA_MISSING_DELTA_TABLE.
+        result = _classify_delta_probe_exception(
+            Exception("[DELTA_MISSING_TRANSACTION_LOG] details")
+        )
+        assert result == "archive_folder_orphan"
+
+    def test_classify_delta_probe_exception_recognises_missing_transaction_log_phrase(self):
+        # Some Spark error variants embed a free-form phrase rather than the
+        # canonical SQLSTATE; cover both shapes.
+        result = _classify_delta_probe_exception(
+            Exception("missing transaction log at /path")
+        )
+        assert result == "archive_folder_orphan"
+
+
+class TestGetArchiveDeltaVersion:
+    def test_valid_returns_max_version(self, mock_spark):
+        df = MagicMock()
+        df.first.return_value = _FakeRow({"v": 7})
+        mock_spark.sql.return_value = df
+        assert get_archive_delta_version(mock_spark, "/p", "tbl", 2022) == 7
+        sql = mock_spark.sql.call_args[0][0]
+        assert "MAX(version)" in sql
+        assert "DESCRIBE HISTORY" in sql
+        assert "delta.`/p/tbl/year_2022`" in sql
+
+    def test_missing_returns_none(self, mock_spark):
+        mock_spark.sql.side_effect = _AnalysisException(
+            "java.io.FileNotFoundException: /missing"
+        )
+        assert get_archive_delta_version(mock_spark, "/p", "tbl", 2022) is None
+
+    def test_orphan_returns_none(self, mock_spark):
+        mock_spark.sql.side_effect = _AnalysisException("not a valid delta table")
+        assert get_archive_delta_version(mock_spark, "/p", "tbl", 2022) is None
+
+    def test_empty_history_returns_none(self, mock_spark):
+        # MAX over zero history rows yields one row with v=NULL.
+        df = MagicMock()
+        df.first.return_value = _FakeRow({"v": None})
+        mock_spark.sql.return_value = df
+        assert get_archive_delta_version(mock_spark, "/p", "tbl", 2022) is None
+
+    def test_first_returns_none_returns_none(self, mock_spark):
+        df = MagicMock()
+        df.first.return_value = None
+        mock_spark.sql.return_value = df
+        assert get_archive_delta_version(mock_spark, "/p", "tbl", 2022) is None
+
+    def test_invalid_table_name_returns_none(self, mock_spark):
+        bad_table = "bad`name"
+        assert get_archive_delta_version(mock_spark, "/p", bad_table, 2022) is None
+        assert mock_spark.sql.call_count == 0
+
+
+class TestGetDeltaHistoryVersionsStrict:
+    def test_valid_preserves_order(self, mock_spark):
+        hist_df = MagicMock()
+        hist_df.collect.return_value = [
+            _FakeRow({"version": 5}),
+            _FakeRow({"version": 4}),
+            _FakeRow({"version": 3}),
+        ]
+        mock_spark.sql.return_value = hist_df
+        assert get_delta_history_versions_strict(mock_spark, "/p", "t", 2000) == [5, 4, 3]
+
+    def test_missing_raises(self, mock_spark):
+        mock_spark.sql.side_effect = _AnalysisException("PATH_NOT_FOUND: /nope")
+        with pytest.raises(ArchiveOperationError) as exc_info:
+            get_delta_history_versions_strict(mock_spark, "/p", "t", 2000)
+        assert exc_info.value.reason == "archive_folder_missing"
+
+    def test_orphan_raises(self, mock_spark):
+        mock_spark.sql.side_effect = _AnalysisException("is not a Delta table")
+        with pytest.raises(ArchiveOperationError) as exc_info:
+            get_delta_history_versions_strict(mock_spark, "/p", "t", 2000)
+        assert exc_info.value.reason == "archive_folder_orphan"
+
+    def test_invalid_version_raises_archive_operation_error(self, mock_spark):
+        hist_df = MagicMock()
+        hist_df.collect.return_value = [_FakeRow({"version": None})]
+        mock_spark.sql.return_value = hist_df
+        with pytest.raises(ArchiveOperationError) as exc_info:
+            get_delta_history_versions_strict(mock_spark, "/p", "t", 2000)
+        assert exc_info.value.reason == "archive_folder_orphan"
+
+    def test_non_numeric_version_raises_archive_operation_error(self, mock_spark):
+        hist_df = MagicMock()
+        hist_df.collect.return_value = [_FakeRow({"version": "abc"})]
+        mock_spark.sql.return_value = hist_df
+        with pytest.raises(ArchiveOperationError) as exc_info:
+            get_delta_history_versions_strict(mock_spark, "/p", "t", 2000)
+        assert exc_info.value.reason == "archive_folder_orphan"
+
+    def test_invalid_table_name_raises_config_error(self, mock_spark):
+        bad_table = "bad`name"
+        with pytest.raises(ArchiveConfigError):
+            get_delta_history_versions_strict(mock_spark, "/p", bad_table, 2000)
+        mock_spark.sql.assert_not_called()
+
+
+class TestCalculateEligibleYears:
+    def test_configured_years_short_circuits_source_scan(self, mock_spark):
+        result = calculate_eligible_years(
+            mock_spark,
+            "cat.sch.tbl",
+            "wm",
+            None,
+            [2020, 2021, 2022],
+            2024,
+        )
+        assert result == [2020, 2021, 2022]
+        mock_spark.sql.assert_not_called()
+
+    def test_empty_configured_years_triggers_source_scan(self, mock_spark):
+        df = MagicMock()
+        df.collect.return_value = [_FakeRow({"yr": 2019}), _FakeRow({"yr": 2020})]
+        mock_spark.sql.return_value = df
+        result = calculate_eligible_years(
+            mock_spark,
+            "cat.sch.tbl",
+            "wm",
+            None,
+            [],
+            2024,
+        )
+        assert result == [2019, 2020]
+        sql = mock_spark.sql.call_args[0][0]
+        assert "SELECT DISTINCT YEAR(wm) AS yr FROM cat.sch.tbl" in sql
+        assert "wm IS NOT NULL" in sql
+
+    def test_none_configured_years_triggers_source_scan(self, mock_spark):
+        df = MagicMock()
+        df.collect.return_value = [_FakeRow({"yr": 2018})]
+        mock_spark.sql.return_value = df
+        assert calculate_eligible_years(
+            mock_spark,
+            "cat.sch.tbl",
+            "wm",
+            None,
+            None,
+            2024,
+        ) == [2018]
+
+    def test_boundary_is_inclusive(self, mock_spark):
+        df = MagicMock()
+        df.collect.return_value = [
+            _FakeRow({"yr": 2019}),
+            _FakeRow({"yr": 2020}),
+            _FakeRow({"yr": 2021}),
+            _FakeRow({"yr": 2022}),
+        ]
+        mock_spark.sql.return_value = df
+        assert calculate_eligible_years(
+            mock_spark, "cat.sch.tbl", "wm", None, None, 2020,
+        ) == [2019, 2020]
+
+    def test_exclusion_clause_appended(self, mock_spark):
+        df = MagicMock()
+        df.collect.return_value = []
+        mock_spark.sql.return_value = df
+        calculate_eligible_years(
+            mock_spark,
+            "cat.sch.tbl",
+            "wm",
+            "claim_status <> 'void'",
+            None,
+            2024,
+        )
+        sql = mock_spark.sql.call_args[0][0]
+        assert "wm IS NOT NULL AND (claim_status <> 'void')" in sql
+
+    def test_invalid_watermark_column_raises_config_error(self, mock_spark):
+        with pytest.raises(ArchiveConfigError):
+            calculate_eligible_years(
+                mock_spark, "cat.sch.tbl", "bad-col", None, None, 2024,
+            )
+        mock_spark.sql.assert_not_called()
+
+    def test_invalid_source_table_raises_config_error(self, mock_spark):
+        with pytest.raises(ArchiveConfigError):
+            calculate_eligible_years(
+                mock_spark, "cat..tbl", "wm", None, None, 2024,
+            )
+        mock_spark.sql.assert_not_called()
+
+    def test_unparseable_year_raises_operation_error(self, mock_spark):
+        df = MagicMock()
+        df.collect.return_value = [_FakeRow({"yr": None})]
+        mock_spark.sql.return_value = df
+        with pytest.raises(ArchiveOperationError) as ei:
+            calculate_eligible_years(
+                mock_spark, "cat.sch.tbl", "wm", None, None, 2024,
+            )
+        assert ei.value.operation == "calculate_eligible_years"
+
+
+class TestDeltaProbeExceptionClassification:
+    # Ensures unknown Spark failures (permission, transient) surface with their
+    # original diagnostic instead of being mislabeled missing/orphan.
+    def test_unknown_analysis_exception_propagates(self, mock_spark):
+        mock_spark.sql.side_effect = _AnalysisException(
+            "PERMISSION_DENIED: missing READ"
+        )
+        with pytest.raises(_AnalysisException, match="PERMISSION_DENIED"):
+            archive_state_and_count(mock_spark, "/p", "tbl", 2022)
+
+    def test_delta_missing_error_classifies_orphan(self, mock_spark):
+        mock_spark.sql.side_effect = _AnalysisException(
+            "DELTA_MISSING_DELTA_TABLE: path is not a Delta table"
+        )
+        assert archive_state_and_count(mock_spark, "/p", "tbl", 2022) == ("ORPHAN", 0)
