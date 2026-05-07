@@ -37,6 +37,11 @@ dbutils.widgets.text(
     "s3://one-env-uc-external-location/sm-field-demo/caresource_archive_folder",
     "External bucket base path (e.g. s3://bucket/prefix). Required when target=external.",
 )
+dbutils.widgets.text(
+    "external_volume",
+    "sandeep_manocha.caresource_archive.caresource_archive_external_vol",
+    "External volume UC name (catalog.schema.volume). Used by 'Create external volume' cell.",
+)
 dbutils.widgets.text("test_table", "schema_drift_poc", "Test table folder name")
 dbutils.widgets.text(
     "rehydrate_view",
@@ -47,6 +52,7 @@ dbutils.widgets.text(
 TARGET_MODE = dbutils.widgets.get("target_mode").strip().lower()
 VOLUME_BASE = dbutils.widgets.get("volume_path").strip().rstrip("/")
 EXTERNAL_BASE = dbutils.widgets.get("external_path").strip().rstrip("/")
+EXTERNAL_VOLUME = dbutils.widgets.get("external_volume").strip()
 TEST_TABLE = dbutils.widgets.get("test_table").strip()
 REHYDRATE_VIEW = dbutils.widgets.get("rehydrate_view").strip()
 
@@ -130,6 +136,33 @@ def run_case(label: str, expected: str, fn) -> None:
     except Exception as exc:
         print(f"  actual  : FAIL — {type(exc).__name__}: {str(exc).splitlines()[0][:300]}")
 
+
+# COMMAND ----------
+# MAGIC %md
+# MAGIC ## Create external volume (run when `target_mode=external`)
+# MAGIC Registers the S3 prefix in `external_path` as a Unity Catalog external volume
+# MAGIC named by the `external_volume` widget. Idempotent — uses `IF NOT EXISTS`.
+# MAGIC Skip this cell when `target_mode=volume`.
+
+# COMMAND ----------
+_vol_parts = EXTERNAL_VOLUME.split(".")
+if len(_vol_parts) != 3 or not all(p.strip() for p in _vol_parts):
+    raise ValueError(
+        f"external_volume must be 'catalog.schema.volume' (got: {EXTERNAL_VOLUME!r})"
+    )
+VOL_CATALOG, VOL_SCHEMA, VOL_NAME = _vol_parts
+
+if not EXTERNAL_BASE:
+    raise ValueError("external_path is required to create an external volume")
+
+spark.sql(f"CREATE SCHEMA IF NOT EXISTS `{VOL_CATALOG}`.`{VOL_SCHEMA}`")
+spark.sql(
+    f"CREATE EXTERNAL VOLUME IF NOT EXISTS "
+    f"`{VOL_CATALOG}`.`{VOL_SCHEMA}`.`{VOL_NAME}` "
+    f"LOCATION '{EXTERNAL_BASE}'"
+)
+print(f"external volume ready: {EXTERNAL_VOLUME} -> {EXTERNAL_BASE}")
+display(spark.sql(f"DESCRIBE VOLUME `{VOL_CATALOG}`.`{VOL_SCHEMA}`.`{VOL_NAME}`"))
 
 # COMMAND ----------
 # MAGIC %md
